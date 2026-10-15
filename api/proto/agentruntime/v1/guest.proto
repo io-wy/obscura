@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package agentruntime.v1;
+
+option go_package = "github.com/obscura/agentruntime/control/gen/agentruntime/v1;agentruntimev1";
+
+message GuestCommand {
+  oneof command {
+    RunCommand run = 1;
+    CancelCommand cancel = 2;
+    PingCommand ping = 3;
+  }
+}
+
+message RunCommand {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  string command = 3;
+  bytes input = 4;
+  map<string, string> env_vars = 5;
+}
+
+message CancelCommand {
+  string sandbox_id = 1;
+  string execution_id = 2;
+}
+
+message PingCommand {
+  string sandbox_id = 1;
+}
+
+message GuestEvent {
+  string protocol_version = 1;
+  string sandbox_id = 2;
+  string execution_id = 3;
+  uint64 sequence = 4;
+  GuestEventType type = 5;
+  bytes payload = 6;
+  string error = 7;
+}
+
+enum GuestEventType {
+  GUEST_EVENT_TYPE_UNSPECIFIED = 0;
+  GUEST_EVENT_TYPE_READY = 1;
+  GUEST_EVENT_TYPE_STARTED = 2;
+  GUEST_EVENT_TYPE_STDOUT = 3;
+  GUEST_EVENT_TYPE_STDERR = 4;
+  GUEST_EVENT_TYPE_RESULT = 5;
+  GUEST_EVENT_TYPE_ERROR = 6;
+  GUEST_EVENT_TYPE_PONG = 7;
+}

@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package agentruntime.v1;
+
+option go_package = "github.com/obscura/agentruntime/control/gen/agentruntime/v1;agentruntimev1";
+
+service DataPlane {
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
+  rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+  rpc Execute(ExecuteRequest) returns (stream AgentEvent);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message CreateSandboxRequest {
+  string request_id = 1;
+  string template_ref = 2;
+  ResourceSpec resources = 3;
+  NetworkPolicy network_policy = 4;
+  // Optional stable UUID assigned by the caller. Required for durable create retries.
+  string sandbox_id = 5;
+  // Immutable caller specification hash; required when sandbox_id is set.
+  string spec_hash = 6;
+}
+
+message CreateSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+message GetSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message GetSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+message DeleteSandboxRequest {
+  string request_id = 1;
+  string sandbox_id = 2;
+}
+
+message DeleteSandboxResponse {}
+
+message ExecuteRequest {
+  string request_id = 1;
+  string sandbox_id = 2;
+  string execution_id = 3;
+  string command = 4;
+  bytes input = 5;
+  int64 deadline_unix_nanos = 6;
+  map<string, string> env_vars = 7;
+}
+
+message AgentEvent {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  uint64 sequence = 3;
+  EventType type = 4;
+  bytes payload = 5;
+  string error = 6;
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_READY = 1;
+  EVENT_TYPE_STARTED = 2;
+  EVENT_TYPE_STDOUT = 3;
+  EVENT_TYPE_STDERR = 4;
+  EVENT_TYPE_RESULT = 5;
+  EVENT_TYPE_ERROR = 6;
+}
+
+message Sandbox {
+  string sandbox_id = 1;
+  string template_ref = 2;
+  ResourceSpec resources = 3;
+  SandboxState state = 4;
+  string failure = 5;
+  int64 created_at_unix_nanos = 6;
+  int64 updated_at_unix_nanos = 7;
+  string guest_ipv4 = 8;
+}
+
+enum SandboxState {
+  SANDBOX_STATE_UNSPECIFIED = 0;
+  SANDBOX_STATE_CREATING = 1;
+  SANDBOX_STATE_READY = 2;
+  SANDBOX_STATE_RUNNING = 3;
+  SANDBOX_STATE_PAUSED = 4;
+  SANDBOX_STATE_DELETED = 5;
+  SANDBOX_STATE_FAILED = 6;
+}
+
+message ResourceSpec {
+  uint32 vcpus = 1;
+  uint32 memory_mib = 2;
+  uint64 disk_mib = 3;
+  int64 max_runtime_nanos = 4;
+}
+
+message NetworkPolicy {
+  bool allow_egress = 1;
+  repeated string allow_hosts = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string protocol_version = 1;
+  string version = 2;
+  repeated string capabilities = 3;
+}
