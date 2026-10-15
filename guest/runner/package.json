@@ -1,0 +1,23 @@
+{
+  "name": "@obscura/agentruntime-runner",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0",
+    "@mariozechner/pi-agent-core": "0.73.1",
+    "@mariozechner/pi-ai": "0.73.1"
+  },
+  "devDependencies": {
+    "@bufbuild/protoc-gen-es": "2.15.0",
+    "@types/node": "26.0.0",
+    "typescript": "7.0.2"
+  },
+  "scripts": {
+    "generate": "../../scripts/generate-guest-proto.sh",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "start": "node dist/src/server.js",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  }
+}
