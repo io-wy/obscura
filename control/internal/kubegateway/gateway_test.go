@@ -12,6 +12,7 @@ import (
 	api "github.com/obscura/agentruntime/control/api/v1alpha1"
 	"github.com/obscura/agentruntime/control/internal/backend"
 	"github.com/obscura/agentruntime/control/internal/controller"
+	"github.com/obscura/agentruntime/control/internal/quota"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,7 +28,16 @@ func testGateway(t *testing.T) *Gateway {
 	if err := api.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	return &Gateway{Client: fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&api.Sandbox{}).Build(), Namespace: "tenant", APIKey: "secret"}
+	tenant := gatewayTenant("tenant", "tenant", 100, "secret")
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&api.Sandbox{}, &api.SandboxTenant{}).WithObjects(tenant).Build()
+	return &Gateway{Client: c, Tenants: &KubernetesTenantResolver{Reader: c}, Quota: &quota.Manager{Client: c, Reader: c}}
+}
+
+func reserveSandbox(t *testing.T, g *Gateway, s *api.Sandbox) {
+	t.Helper()
+	if err := g.Quota.ReserveSandbox(context.Background(), "tenant", quota.SandboxRequest{SandboxID: s.Name, SpecHash: controller.SpecHash(s.Spec), Resources: s.Spec.Resources, TimeoutSeconds: s.Spec.TimeoutSeconds}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type executionBackend struct {
@@ -68,6 +78,7 @@ func TestExecutionStreamsUsingPinnedHandleAndClampsLifetime(t *testing.T) {
 	if err := g.Client.Create(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
+	reserveSandbox(t, g, s)
 	w := call(t, g, "POST", "/v1/sandboxes/ready/execute", `{"command":"echo hello","timeoutSeconds":300}`, "secret", "")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"payload":"hello"`) || b.handle != "actual-backend-id" || b.deadline.After(expires.Time) {
 		t.Fatalf("execution: %d %s deadline=%v", w.Code, w.Body.String(), b.deadline)
@@ -96,6 +107,7 @@ func TestExecutionInterruptedAfterOutputReportsTransportError(t *testing.T) {
 	if err := g.Client.Create(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
+	reserveSandbox(t, g, s)
 	w := call(t, g, "POST", "/v1/sandboxes/ready/execute", `{"command":"echo hello"}`, "secret", "")
 	if w.Code != http.StatusOK || b.calls != 1 || !strings.Contains(w.Body.String(), `"type":"stdout"`) || !strings.Contains(w.Body.String(), `"type":"transport_error"`) {
 		t.Fatalf("interrupted execution: status=%d body=%s calls=%d", w.Code, w.Body.String(), b.calls)

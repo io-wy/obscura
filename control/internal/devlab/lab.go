@@ -21,10 +21,13 @@ import (
 	"github.com/obscura/agentruntime/control/internal/controller"
 	"github.com/obscura/agentruntime/control/internal/devruntime"
 	"github.com/obscura/agentruntime/control/internal/kubegateway"
+	"github.com/obscura/agentruntime/control/internal/quota"
 	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -101,6 +104,21 @@ func Start(ctx context.Context, opts Options) (_ *Lab, err error) {
 	if err = l.Client.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: l.Namespace}}); err != nil {
 		return nil, err
 	}
+	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-key", Namespace: l.Namespace}, Data: map[string][]byte{"api-key": []byte(l.APIKey)}}
+	if err = l.Client.Create(ctx, authSecret); err != nil {
+		return nil, err
+	}
+	tenant := &api.SandboxTenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
+		Spec: api.SandboxTenantSpec{
+			Namespace:   l.Namespace,
+			Credentials: []corev1.SecretKeySelector{{LocalObjectReference: corev1.LocalObjectReference{Name: authSecret.Name}, Key: "api-key"}},
+			Quota:       api.TenantQuota{MaxSandboxes: 100, MaxTimeoutSeconds: 86400, MaxConcurrentExecutions: 10, MaxConcurrentPTY: 5},
+		},
+	}
+	if err = l.Client.Create(ctx, tenant); err != nil {
+		return nil, err
+	}
 	socket := filepath.Join(l.directory, "runtime.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
@@ -120,7 +138,21 @@ func Start(ctx context.Context, opts Options) (_ *Lab, err error) {
 	if err = l.RestartController(ctx); err != nil {
 		return nil, err
 	}
-	g := &kubegateway.Gateway{Client: l.Client, Factory: backend.NewRegistry(l.Client), Namespace: l.Namespace, APIKey: l.APIKey}
+	if err = wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+		current := &api.SandboxTenant{}
+		if err := l.Client.Get(ctx, client.ObjectKey{Name: tenant.Name}, current); err != nil {
+			return false, err
+		}
+		condition := meta.FindStatusCondition(current.Status.Conditions, "Ready")
+		return condition != nil && condition.Status == metav1.ConditionTrue && len(current.Status.CredentialHashes) == 1, nil
+	}); err != nil {
+		return nil, fmt.Errorf("wait for tenant credentials: %w", err)
+	}
+	g := &kubegateway.Gateway{
+		Client: l.Client, Factory: backend.NewRegistry(l.Client),
+		Tenants: &kubegateway.KubernetesTenantResolver{Reader: l.Client},
+		Quota:   &quota.Manager{Client: l.Client, Reader: l.Client},
+	}
 	if l.GatewayURL, err = l.serve(opts.GatewayAddress, g.Handler()); err != nil {
 		return nil, err
 	}
@@ -149,6 +181,10 @@ func (l *Lab) RestartController(ctx context.Context) error {
 	}
 	r := &controller.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Factory: backend.NewRegistry(mgr.GetAPIReader()), PollInterval: 100 * time.Millisecond}
 	if err := r.SetupWithManager(mgr); err != nil {
+		return err
+	}
+	tenant := &controller.TenantReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), AuthNamespace: l.Namespace, OrphanGracePeriod: time.Second}
+	if err := tenant.SetupWithManager(mgr); err != nil {
 		return err
 	}
 	managerCtx, cancel := context.WithCancel(l.ctx)

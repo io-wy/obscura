@@ -4,7 +4,6 @@ package kubegateway
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,7 @@ import (
 	api "github.com/obscura/agentruntime/control/api/v1alpha1"
 	"github.com/obscura/agentruntime/control/internal/backend"
 	"github.com/obscura/agentruntime/control/internal/controller"
+	"github.com/obscura/agentruntime/control/internal/quota"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,9 +25,8 @@ import (
 type Gateway struct {
 	Client  client.Client
 	Factory backend.Factory
-	// Each gateway is restricted to one tenant namespace and one API key.
-	Namespace string
-	APIKey    string
+	Tenants TenantResolver
+	Quota   *quota.Manager
 }
 
 func (g *Gateway) Handler() http.Handler {
@@ -38,12 +37,37 @@ func (g *Gateway) Handler() http.Handler {
 	m.HandleFunc("DELETE /v1/sandboxes/{sandboxID}", g.delete)
 	m.HandleFunc("POST /v1/sandboxes/{sandboxID}/execute", g.execute)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" && (g.APIKey == "" || subtle.ConstantTimeCompare([]byte(g.APIKey), []byte(r.Header.Get("X-API-Key"))) != 1) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if r.URL.Path == "/healthz" {
+			m.ServeHTTP(w, r)
 			return
 		}
-		m.ServeHTTP(w, r)
+		if g.Tenants == nil {
+			writeError(w, http.StatusServiceUnavailable, "tenant_registry_unavailable", "tenant registry is unavailable")
+			return
+		}
+		tenant, err := g.Tenants.Resolve(r.Context(), r.Header.Get("X-API-Key"))
+		if err != nil {
+			if errors.Is(err, ErrTenantUnavailable) {
+				writeError(w, http.StatusServiceUnavailable, "tenant_registry_unavailable", "tenant registry is unavailable")
+			} else {
+				writeError(w, http.StatusUnauthorized, "unauthorized", "request is not authenticated")
+			}
+			return
+		}
+		m.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tenantContextKey{}, tenant)))
 	})
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	jsonResponse(w, status, struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}{Error: struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{Code: code, Message: message}})
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) error {
@@ -73,42 +97,62 @@ func public(s *api.Sandbox) any {
 }
 
 func (g *Gateway) create(w http.ResponseWriter, r *http.Request) {
+	tenant := tenantFromContext(r.Context())
 	var spec api.SandboxSpec
 	if err := decode(w, r, &spec); err != nil || strings.TrimSpace(spec.RuntimeRef) == "" || strings.TrimSpace(spec.TemplateRef) == "" || spec.TimeoutSeconds < 1 || spec.TimeoutSeconds > 86400 {
-		http.Error(w, "invalid sandbox request", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid sandbox request")
 		return
 	}
 	if v := spec.Resources; v != nil && (v.VCPUs < 1 || v.MemoryMiB < 1 || v.DiskMiB < 1) {
-		http.Error(w, "invalid resource limits", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid resource limits")
 		return
 	}
 	name := "sbx-" + uuid.NewString()
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
 		if len(key) > 256 {
-			http.Error(w, "idempotency key too long", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid_request", "idempotency key too long")
 			return
 		}
-		h := sha256.Sum256([]byte(g.Namespace + "\x00" + key))
+		h := sha256.Sum256([]byte(tenant.Name + "\x00" + key))
 		name = "sbx-" + hex.EncodeToString(h[:])[:40]
 	}
-	s := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: g.Namespace}, Spec: spec}
+	if g.Quota == nil {
+		writeError(w, http.StatusServiceUnavailable, "quota_unavailable", "tenant quota service is unavailable")
+		return
+	}
+	reservation := quota.SandboxRequest{SandboxID: name, SpecHash: controller.SpecHash(spec), Resources: spec.Resources, TimeoutSeconds: spec.TimeoutSeconds}
+	if err := g.Quota.ReserveSandbox(r.Context(), tenant.Name, reservation); err != nil {
+		switch {
+		case errors.Is(err, quota.ErrQuotaExceeded):
+			writeError(w, http.StatusTooManyRequests, "quota_exceeded", "tenant sandbox quota exceeded")
+		case errors.Is(err, quota.ErrReservationConflict):
+			writeError(w, http.StatusConflict, "idempotency_conflict", "idempotency key already used for a different request")
+		default:
+			writeError(w, http.StatusServiceUnavailable, "quota_unavailable", "tenant quota service is unavailable")
+		}
+		return
+	}
+	s := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: tenant.Spec.Namespace, Labels: map[string]string{"sandbox.obscura.dev/tenant": tenant.Name}}, Spec: spec}
 	if err := g.Client.Create(r.Context(), s); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			http.Error(w, "unable to persist sandbox", http.StatusServiceUnavailable)
+			if apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsMethodNotSupported(err) {
+				_ = g.Quota.ReleaseSandbox(r.Context(), tenant.Name, name)
+			}
+			writeError(w, http.StatusServiceUnavailable, "sandbox_persistence_unavailable", "unable to persist sandbox")
 			return
 		}
 		existing := &api.Sandbox{}
 		if err := g.Client.Get(r.Context(), client.ObjectKeyFromObject(s), existing); err != nil {
-			http.Error(w, "unable to read sandbox", http.StatusServiceUnavailable)
+			writeError(w, http.StatusServiceUnavailable, "sandbox_state_unavailable", "unable to read sandbox")
 			return
 		}
 		s = existing
 		if controller.SpecHash(s.Spec) != controller.SpecHash(spec) {
-			http.Error(w, "idempotency key already used for a different request", http.StatusConflict)
+			writeError(w, http.StatusConflict, "idempotency_conflict", "idempotency key already used for a different request")
 			return
 		}
 		if !s.DeletionTimestamp.IsZero() {
-			http.Error(w, "sandbox is terminating", http.StatusConflict)
+			writeError(w, http.StatusConflict, "sandbox_terminating", "sandbox is terminating")
 			return
 		}
 	}
@@ -120,12 +164,13 @@ func (g *Gateway) create(w http.ResponseWriter, r *http.Request) {
 }
 func (g *Gateway) load(w http.ResponseWriter, r *http.Request) *api.Sandbox {
 	id := r.PathValue("sandboxID")
+	tenant := tenantFromContext(r.Context())
 	s := &api.Sandbox{}
-	if err := g.Client.Get(r.Context(), client.ObjectKey{Namespace: g.Namespace, Name: id}, s); err != nil {
+	if err := g.Client.Get(r.Context(), client.ObjectKey{Namespace: tenant.Spec.Namespace, Name: id}, s); err != nil {
 		if apierrors.IsNotFound(err) {
-			http.Error(w, "sandbox not found", http.StatusNotFound)
+			writeError(w, http.StatusNotFound, "sandbox_not_found", "sandbox not found")
 		} else {
-			http.Error(w, "sandbox state unavailable", http.StatusServiceUnavailable)
+			writeError(w, http.StatusServiceUnavailable, "sandbox_state_unavailable", "sandbox state unavailable")
 		}
 		return nil
 	}
@@ -142,7 +187,7 @@ func (g *Gateway) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := g.Client.Delete(r.Context(), s); err != nil && !apierrors.IsNotFound(err) {
-		http.Error(w, "unable to request deletion", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "sandbox_deletion_unavailable", "unable to request deletion")
 		return
 	}
 	jsonResponse(w, http.StatusAccepted, map[string]string{"sandboxID": s.Name, "phase": "Terminating"})
@@ -156,7 +201,7 @@ func (g *Gateway) execute(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds int64             `json:"timeoutSeconds,omitempty"`
 	}
 	if err := decode(w, r, &input); err != nil || input.Command == "" || input.TimeoutSeconds < 0 || input.TimeoutSeconds > 3600 {
-		http.Error(w, "invalid execution request", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid execution request")
 		return
 	}
 	s := g.load(w, r)
@@ -164,11 +209,11 @@ func (g *Gateway) execute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.DeletionTimestamp.IsZero() || s.Status.Phase != "Ready" || s.Status.Binding == nil || s.Status.Binding.Handle == "" || s.Status.Binding.SpecHash != controller.SpecHash(s.Spec) {
-		http.Error(w, "sandbox is not ready", http.StatusConflict)
+		writeError(w, http.StatusConflict, "sandbox_not_ready", "sandbox is not ready")
 		return
 	}
 	if g.Factory == nil {
-		http.Error(w, "runtime unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "runtime is unavailable")
 		return
 	}
 	ttl := time.Duration(input.TimeoutSeconds) * time.Second
@@ -177,7 +222,7 @@ func (g *Gateway) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	deadline := time.Now().Add(ttl)
 	if s.Status.ExpiresAt == nil || !time.Now().Before(s.Status.ExpiresAt.Time) {
-		http.Error(w, "sandbox has expired", http.StatusConflict)
+		writeError(w, http.StatusConflict, "sandbox_expired", "sandbox has expired")
 		return
 	}
 	if deadline.After(s.Status.ExpiresAt.Time) {
@@ -185,13 +230,27 @@ func (g *Gateway) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithDeadline(r.Context(), deadline)
 	defer cancel()
-	b, err := g.Factory.Open(ctx, g.Namespace, controller.Config(s.Status.Binding.Config))
+	tenant := tenantFromContext(r.Context())
+	execution := backend.Execution{ID: uuid.NewString(), Command: input.Command, Input: []byte(input.Input), EnvVars: input.EnvVars, Deadline: deadline}
+	if g.Quota == nil {
+		writeError(w, http.StatusServiceUnavailable, "quota_unavailable", "tenant quota service is unavailable")
+		return
+	}
+	if err := g.Quota.AcquireSession(ctx, tenant.Name, quota.SessionRequest{ID: execution.ID, SandboxID: s.Name, Kind: quota.SessionExecution, TTL: time.Until(deadline)}); err != nil {
+		if errors.Is(err, quota.ErrQuotaExceeded) {
+			writeError(w, http.StatusTooManyRequests, "session_quota_exceeded", "tenant execution session quota exceeded")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "quota_unavailable", "tenant quota service is unavailable")
+		}
+		return
+	}
+	defer func() { _ = g.Quota.ReleaseSession(context.Background(), tenant.Name, execution.ID) }()
+	b, err := g.Factory.Open(ctx, tenant.Spec.Namespace, controller.Config(s.Status.Binding.Config))
 	if err != nil {
-		http.Error(w, "runtime unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "runtime is unavailable")
 		return
 	}
 	defer b.Close()
-	execution := backend.Execution{ID: uuid.NewString(), Command: input.Command, Input: []byte(input.Input), EnvVars: input.EnvVars, Deadline: deadline}
 	started := false
 	emit := func(e backend.Event) error {
 		if !started {
@@ -212,9 +271,9 @@ func (g *Gateway) execute(w http.ResponseWriter, r *http.Request) {
 		if started {
 			_ = emit(backend.Event{ExecutionID: execution.ID, Type: "transport_error", Error: "runtime execution interrupted"})
 		} else if errors.Is(err, backend.ErrUnsupported) {
-			http.Error(w, "runtime does not support execution through this gateway", http.StatusNotImplemented)
+			writeError(w, http.StatusNotImplemented, "capability_unsupported", "runtime does not support execution through this gateway")
 		} else {
-			http.Error(w, "runtime execution unavailable", http.StatusBadGateway)
+			writeError(w, http.StatusBadGateway, "runtime_execution_unavailable", "runtime execution is unavailable")
 		}
 		return
 	}
