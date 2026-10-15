@@ -251,6 +251,11 @@ func (g *Gateway) execute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer b.Close()
+	executor, ok := b.(backend.Executor)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "capability_unsupported", "runtime does not support execution through this gateway")
+		return
+	}
 	started := false
 	emit := func(e backend.Event) error {
 		if !started {
@@ -267,7 +272,7 @@ func (g *Gateway) execute(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
-	if err := b.Exec(ctx, s.Status.Binding.Handle, execution, emit); err != nil {
+	if err := executor.Exec(ctx, s.Status.Binding.Handle, execution, emit); err != nil {
 		if started {
 			_ = emit(backend.Event{ExecutionID: execution.ID, Type: "transport_error", Error: "runtime execution interrupted"})
 		} else if errors.Is(err, backend.ErrUnsupported) {

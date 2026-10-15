@@ -61,7 +61,13 @@ func (s *fakeNative) Execute(_ *pb.ExecuteRequest, stream grpc.ServerStreamingSe
 	}
 	return stream.Send(&pb.AgentEvent{SandboxId: "a", ExecutionId: "exec", Sequence: 2, Type: pb.EventType_EVENT_TYPE_RESULT, Payload: []byte(`{"exitCode":0}`)})
 }
-func nativeBackend(t *testing.T, s *fakeNative) Backend {
+
+type executableBackend interface {
+	Backend
+	Executor
+}
+
+func nativeBackend(t *testing.T, s *fakeNative) executableBackend {
 	t.Helper()
 	directory, err := os.MkdirTemp("/tmp", "obscura-rpc-")
 	if err != nil {
@@ -82,7 +88,11 @@ func nativeBackend(t *testing.T, s *fakeNative) Backend {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { b.Close() })
-	return b
+	executable, ok := b.(executableBackend)
+	if !ok {
+		t.Fatal("native backend does not implement execution")
+	}
+	return executable
 }
 func nativeRequest() Request {
 	return Request{ID: "11111111-1111-4111-8111-111111111111", SpecHash: "hash", Template: "test", Resources: Resources{VCPUs: 1, MemoryMiB: 128, DiskMiB: 128}, TimeoutSeconds: 60}

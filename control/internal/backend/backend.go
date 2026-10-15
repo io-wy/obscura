@@ -4,6 +4,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -83,13 +84,81 @@ type Event struct {
 	Error       string `json:"error,omitempty"`
 }
 
+type Executor interface {
+	Exec(context.Context, string, Execution, func(Event) error) error
+}
+
+type FileRead struct {
+	Body        io.ReadCloser
+	Size        int64
+	ContentType string
+}
+
+type FileWrite struct {
+	Path        string
+	Body        io.Reader
+	Size        int64
+	ContentType string
+}
+
+type FileSystem interface {
+	ReadFile(context.Context, string, string) (FileRead, error)
+	WriteFile(context.Context, string, FileWrite) error
+}
+
+type PTYRequest struct {
+	ID       string
+	Command  string
+	EnvVars  map[string]string
+	Columns  uint16
+	Rows     uint16
+	Deadline time.Time
+}
+
+type PTYMessage struct {
+	Type    string `json:"type"`
+	Payload string `json:"payload,omitempty"`
+	Columns uint16 `json:"columns,omitempty"`
+	Rows    uint16 `json:"rows,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type PTYSession interface {
+	Send(context.Context, PTYMessage) error
+	Receive(context.Context) (PTYMessage, error)
+	Close() error
+}
+
+type PTY interface {
+	OpenPTY(context.Context, string, PTYRequest) (PTYSession, error)
+}
+
+type ProxyRequest struct {
+	Port          uint16
+	Method        string
+	Path          string
+	RawQuery      string
+	Header        map[string][]string
+	Body          io.Reader
+	ContentLength int64
+}
+
+type ProxyResponse struct {
+	StatusCode int
+	Header     map[string][]string
+	Body       io.ReadCloser
+}
+
+type PortProxy interface {
+	Proxy(context.Context, string, ProxyRequest) (ProxyResponse, error)
+}
+
 type Backend interface {
 	Validate(Request) error
 	Ensure(context.Context, Request) (Observation, error)
 	Observe(context.Context, string) (Observation, error)
 	// Delete returns true only once backend resources are confirmed absent.
 	Delete(context.Context, string) (bool, error)
-	Exec(context.Context, string, Execution, func(Event) error) error
 	Close() error
 }
 

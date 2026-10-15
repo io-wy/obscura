@@ -184,7 +184,11 @@ func TestHTTPRejectsUnsupportedRequests(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	}
-	if err := b.Exec(context.Background(), "a", Execution{}, func(Event) error { return nil }); !errors.Is(err, ErrUnsupported) {
+	executor, ok := b.(Executor)
+	if !ok {
+		t.Fatal("HTTP backend does not expose its execution capability")
+	}
+	if err := executor.Exec(context.Background(), "a", Execution{}, func(Event) error { return nil }); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("exec %v", err)
 	}
 }
