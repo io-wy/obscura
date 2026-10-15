@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -347,6 +349,70 @@ func TestHTTPFilesRejectInvalidPathsAndSizes(t *testing.T) {
 		t.Fatalf("oversized write: %v", err)
 	}
 }
+
+func TestHTTPPTYWebSocketContract(t *testing.T) {
+	deadline := time.Now().Add(time.Minute).Round(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/sandboxes/remote%2Fid/pty" {
+			t.Errorf("path: %s", r.URL.EscapedPath())
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.CloseNow()
+		var start struct {
+			Type             string            `json:"type"`
+			SessionID        string            `json:"sessionID"`
+			Command          string            `json:"command"`
+			EnvVars          map[string]string `json:"envVars"`
+			Columns          uint16            `json:"columns"`
+			Rows             uint16            `json:"rows"`
+			DeadlineUnixNano int64             `json:"deadlineUnixNano"`
+		}
+		if err := wsjson.Read(r.Context(), conn, &start); err != nil {
+			t.Error(err)
+			return
+		}
+		if start.Type != "start" || start.SessionID != "pty-1" || start.Command != "/bin/sh" || start.EnvVars["TERM"] != "xterm" || start.Columns != 80 || start.Rows != 24 || start.DeadlineUnixNano != deadline.UnixNano() {
+			t.Errorf("start: %+v", start)
+		}
+		if err := wsjson.Write(r.Context(), conn, PTYMessage{Type: "output", Payload: "ready"}); err != nil {
+			t.Error(err)
+			return
+		}
+		var input PTYMessage
+		if err := wsjson.Read(r.Context(), conn, &input); err != nil || input.Type != "input" || input.Payload != "echo hi\n" {
+			t.Errorf("input=%+v err=%v", input, err)
+			return
+		}
+		_ = wsjson.Write(r.Context(), conn, PTYMessage{Type: "exit", Payload: "0"})
+	}))
+	defer server.Close()
+	b, err := NewRegistry(nil).Open(context.Background(), "test", Config{Type: "e2b", Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	pty := b.(PTY)
+	session, err := pty.OpenPTY(context.Background(), "remote/id", PTYRequest{ID: "pty-1", Command: "/bin/sh", EnvVars: map[string]string{"TERM": "xterm"}, Columns: 80, Rows: 24, Deadline: deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	message, err := session.Receive(context.Background())
+	if err != nil || message.Type != "output" || message.Payload != "ready" {
+		t.Fatalf("output=%+v err=%v", message, err)
+	}
+	if err := session.Send(context.Background(), PTYMessage{Type: "input", Payload: "echo hi\n"}); err != nil {
+		t.Fatal(err)
+	}
+	message, err = session.Receive(context.Background())
+	if err != nil || message.Type != "exit" {
+		t.Fatalf("exit=%+v err=%v", message, err)
+	}
+}
 func TestRegistryLoadsNamespacedSecret(t *testing.T) {
 	scheme := runtime.NewScheme()
 	corev1.AddToScheme(scheme)
@@ -358,7 +424,7 @@ func TestRegistryLoadsNamespacedSecret(t *testing.T) {
 		w.Write([]byte(`{"sandboxID":"a","state":"running","envdAccessToken":"sensitive"}`))
 	}))
 	defer server.Close()
-	config := Config{Type: "agentenv", Endpoint: server.URL, APIKeySecretName: "key", APIKeySecretKey: "token"}
+	config := Config{Type: "e2b", Endpoint: server.URL, APIKeySecretName: "key", APIKeySecretKey: "token"}
 	b, err := NewRegistry(reader).Open(context.Background(), "tenant", config)
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +449,7 @@ func TestRegistrySeparatesControlAndDataEndpoints(t *testing.T) {
 	}))
 	defer data.Close()
 
-	b, err := NewRegistry(nil).Open(context.Background(), "test", Config{Type: "agentenv", ControlEndpoint: control.URL, DataEndpoint: data.URL})
+	b, err := NewRegistry(nil).Open(context.Background(), "test", Config{Type: "e2b", ControlEndpoint: control.URL, DataEndpoint: data.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,6 +460,17 @@ func TestRegistrySeparatesControlAndDataEndpoints(t *testing.T) {
 	}
 	if err := executor.Exec(context.Background(), "sandbox", Execution{ID: "exec", Command: "true", Deadline: time.Now().Add(time.Second)}, func(Event) error { return nil }); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("execution error = %v, want data endpoint 404", err)
+	}
+}
+
+func TestRegistryDoesNotRouteNamedProvidersToLegacyE2BAdapter(t *testing.T) {
+	for _, provider := range []string{"agentenv", "opensandbox", "cubesandbox"} {
+		t.Run(provider, func(t *testing.T) {
+			_, err := NewRegistry(nil).Open(context.Background(), "test", Config{Type: provider, Endpoint: "http://runtime.test"})
+			if !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("Open(%q) error = %v, want ErrUnsupported", provider, err)
+			}
+		})
 	}
 }
 

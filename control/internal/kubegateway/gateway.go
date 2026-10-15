@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
 	api "github.com/obscura/agentruntime/control/api/v1alpha1"
 	"github.com/obscura/agentruntime/control/internal/backend"
@@ -42,6 +44,7 @@ func (g *Gateway) Handler() http.Handler {
 	m.HandleFunc("POST /v1/sandboxes/{sandboxID}/execute", g.execute)
 	m.HandleFunc("GET /v1/sandboxes/{sandboxID}/files", g.files)
 	m.HandleFunc("PUT /v1/sandboxes/{sandboxID}/files", g.files)
+	m.HandleFunc("GET /v1/sandboxes/{sandboxID}/pty", g.pty)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			m.ServeHTTP(w, r)
@@ -390,4 +393,136 @@ func writeBackendError(w http.ResponseWriter, err error, operation string) {
 	default:
 		writeError(w, http.StatusBadGateway, "runtime_unavailable", "runtime "+operation+" is unavailable")
 	}
+}
+
+func (g *Gateway) pty(w http.ResponseWriter, r *http.Request) {
+	s := g.load(w, r)
+	if s == nil {
+		return
+	}
+	if !s.DeletionTimestamp.IsZero() || s.Status.Phase != "Ready" || s.Status.Binding == nil || s.Status.Binding.Handle == "" || s.Status.Binding.SpecHash != controller.SpecHash(s.Spec) {
+		writeError(w, http.StatusConflict, "sandbox_not_ready", "sandbox is not ready")
+		return
+	}
+	if s.Status.ExpiresAt == nil || !time.Now().Before(s.Status.ExpiresAt.Time) {
+		writeError(w, http.StatusConflict, "sandbox_expired", "sandbox has expired")
+		return
+	}
+	if g.Factory == nil || g.Quota == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "runtime or quota service is unavailable")
+		return
+	}
+	tenant := tenantFromContext(r.Context())
+	b, err := g.Factory.Open(r.Context(), tenant.Spec.Namespace, controller.Config(s.Status.Binding.Config))
+	if err != nil {
+		writeBackendError(w, err, "PTY session")
+		return
+	}
+	defer b.Close()
+	pty, ok := b.(backend.PTY)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "capability_unsupported", "runtime does not support PTY sessions through this gateway")
+		return
+	}
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.CloseNow()
+	conn.SetReadLimit(256 << 10)
+	startContext, cancelStart := context.WithTimeout(r.Context(), 10*time.Second)
+	var start struct {
+		Type           string            `json:"type"`
+		Command        string            `json:"command"`
+		EnvVars        map[string]string `json:"envVars,omitempty"`
+		Columns        uint16            `json:"columns"`
+		Rows           uint16            `json:"rows"`
+		TimeoutSeconds int64             `json:"timeoutSeconds,omitempty"`
+	}
+	err = wsjson.Read(startContext, conn, &start)
+	cancelStart()
+	if err != nil || start.Type != "start" || start.Command == "" || start.Columns == 0 || start.Rows == 0 || start.TimeoutSeconds < 0 || start.TimeoutSeconds > 1800 {
+		_ = wsjson.Write(context.Background(), conn, backend.PTYMessage{Type: "error", Error: "invalid PTY start request"})
+		_ = conn.Close(websocket.StatusPolicyViolation, "invalid PTY start")
+		return
+	}
+	ttl := time.Duration(start.TimeoutSeconds) * time.Second
+	if ttl == 0 {
+		ttl = 30 * time.Minute
+	}
+	deadline := time.Now().Add(ttl)
+	if deadline.After(s.Status.ExpiresAt.Time) {
+		deadline = s.Status.ExpiresAt.Time
+	}
+	ctx, cancel := context.WithDeadline(r.Context(), deadline)
+	defer cancel()
+	sessionID := uuid.NewString()
+	if err := g.Quota.AcquireSession(ctx, tenant.Name, quota.SessionRequest{ID: sessionID, SandboxID: s.Name, Kind: quota.SessionPTY, TTL: time.Until(deadline)}); err != nil {
+		message := "PTY quota is unavailable"
+		if errors.Is(err, quota.ErrQuotaExceeded) {
+			message = "PTY session quota exceeded"
+		}
+		_ = wsjson.Write(context.Background(), conn, backend.PTYMessage{Type: "error", Error: message})
+		_ = conn.Close(websocket.StatusPolicyViolation, "PTY unavailable")
+		return
+	}
+	defer func() {
+		releaseContext, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer releaseCancel()
+		_ = g.Quota.ReleaseSession(releaseContext, tenant.Name, sessionID)
+	}()
+	session, err := pty.OpenPTY(ctx, s.Status.Binding.Handle, backend.PTYRequest{ID: sessionID, Command: start.Command, EnvVars: start.EnvVars, Columns: start.Columns, Rows: start.Rows, Deadline: deadline})
+	if err != nil {
+		_ = wsjson.Write(context.Background(), conn, backend.PTYMessage{Type: "error", Error: "runtime PTY session unavailable"})
+		_ = conn.Close(websocket.StatusInternalError, "runtime PTY unavailable")
+		return
+	}
+	defer session.Close()
+	type bridgeResult struct {
+		terminal bool
+		err      error
+	}
+	results := make(chan bridgeResult, 2)
+	go func() {
+		for {
+			var message backend.PTYMessage
+			if err := wsjson.Read(ctx, conn, &message); err != nil {
+				results <- bridgeResult{err: err}
+				return
+			}
+			if message.Type != "input" && message.Type != "resize" {
+				results <- bridgeResult{err: backend.ErrInvalid}
+				return
+			}
+			if err := session.Send(ctx, message); err != nil {
+				results <- bridgeResult{err: err}
+				return
+			}
+		}
+	}()
+	go func() {
+		for {
+			message, err := session.Receive(ctx)
+			if err != nil {
+				results <- bridgeResult{err: err}
+				return
+			}
+			if err := wsjson.Write(ctx, conn, message); err != nil {
+				results <- bridgeResult{err: err}
+				return
+			}
+			if message.Type == "exit" || message.Type == "error" {
+				results <- bridgeResult{terminal: true}
+				return
+			}
+		}
+	}()
+	result := <-results
+	cancel()
+	_ = session.Close()
+	if result.terminal {
+		_ = conn.Close(websocket.StatusNormalClosure, "PTY complete")
+		return
+	}
+	_ = conn.Close(websocket.StatusInternalError, "PTY interrupted")
 }

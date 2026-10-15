@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	api "github.com/obscura/agentruntime/control/api/v1alpha1"
 	"github.com/obscura/agentruntime/control/internal/backend"
 	"github.com/obscura/agentruntime/control/internal/controller"
@@ -105,6 +107,46 @@ func readySandbox(t *testing.T, g *Gateway, name string) *api.Sandbox {
 	return s
 }
 
+type fakePTYSession struct {
+	out  chan backend.PTYMessage
+	sent chan backend.PTYMessage
+}
+
+func (s *fakePTYSession) Send(ctx context.Context, message backend.PTYMessage) error {
+	select {
+	case s.sent <- message:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if message.Type == "input" {
+		s.out <- backend.PTYMessage{Type: "exit", Payload: "0"}
+	}
+	return nil
+}
+func (s *fakePTYSession) Receive(ctx context.Context) (backend.PTYMessage, error) {
+	select {
+	case message := <-s.out:
+		return message, nil
+	case <-ctx.Done():
+		return backend.PTYMessage{}, ctx.Err()
+	}
+}
+func (s *fakePTYSession) Close() error { return nil }
+
+type ptyBackend struct {
+	backend.Backend
+	request backend.PTYRequest
+	session *fakePTYSession
+}
+
+func (b *ptyBackend) Close() error { return nil }
+func (b *ptyBackend) OpenPTY(_ context.Context, _ string, request backend.PTYRequest) (backend.PTYSession, error) {
+	b.request = request
+	b.session = &fakePTYSession{out: make(chan backend.PTYMessage, 2), sent: make(chan backend.PTYMessage, 2)}
+	b.session.out <- backend.PTYMessage{Type: "output", Payload: "ready"}
+	return b.session, nil
+}
+
 func TestExecutionStreamsUsingPinnedHandleAndClampsLifetime(t *testing.T) {
 	g := testGateway(t)
 	b := &executionBackend{}
@@ -167,6 +209,61 @@ func TestFileReadWriteRoutes(t *testing.T) {
 	g.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusNoContent || b.writePath != "/work/a.txt" || b.written != "hello" || b.contentType != "text/plain" {
 		t.Fatalf("write: status=%d body=%s path=%q data=%q type=%q", w.Code, w.Body.String(), b.writePath, b.written, b.contentType)
+	}
+}
+
+func TestPTYWebSocketBridgeAndLeaseRelease(t *testing.T) {
+	g := testGateway(t)
+	b := &ptyBackend{}
+	g.Factory = backendFactory{b: b}
+	readySandbox(t, g, "pty")
+	server := httptest.NewServer(g.Handler())
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/sandboxes/pty/pty"
+	conn, _, err := websocket.Dial(context.Background(), url, &websocket.DialOptions{HTTPHeader: http.Header{"X-API-Key": []string{"secret"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	start := map[string]any{"type": "start", "command": "/bin/sh", "envVars": map[string]string{"TERM": "xterm"}, "columns": 80, "rows": 24, "timeoutSeconds": 30}
+	if err := wsjson.Write(context.Background(), conn, start); err != nil {
+		t.Fatal(err)
+	}
+	var message backend.PTYMessage
+	if err := wsjson.Read(context.Background(), conn, &message); err != nil || message.Type != "output" || message.Payload != "ready" {
+		t.Fatalf("output=%+v err=%v", message, err)
+	}
+	if err := wsjson.Write(context.Background(), conn, backend.PTYMessage{Type: "input", Payload: "echo hi\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &message); err != nil || message.Type != "exit" {
+		t.Fatalf("exit=%+v err=%v", message, err)
+	}
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+	if b.request.Command != "/bin/sh" || b.request.Columns != 80 || b.request.Rows != 24 || b.request.EnvVars["TERM"] != "xterm" {
+		t.Fatalf("request=%+v", b.request)
+	}
+	select {
+	case sent := <-b.session.sent:
+		if sent.Type != "input" || sent.Payload != "echo hi\n" {
+			t.Fatalf("sent=%+v", sent)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client input not forwarded")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		tenant := &api.SandboxTenant{}
+		if err := g.Client.Get(context.Background(), client.ObjectKey{Name: "tenant"}, tenant); err != nil {
+			t.Fatal(err)
+		}
+		if len(tenant.Status.Sessions) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("PTY lease retained: %+v", tenant.Status.Sessions)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

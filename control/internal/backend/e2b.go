@@ -14,6 +14,9 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 // httpBackendClient implements the E2B lifecycle subset, not envd or full SDK compatibility.
@@ -422,4 +425,106 @@ func (b *httpBackendClient) WriteFile(ctx context.Context, id string, file FileW
 	}
 	defer resp.Body.Close()
 	return httpResponseError(resp.StatusCode)
+}
+
+type httpPTYSession struct {
+	conn *websocket.Conn
+}
+
+func (s *httpPTYSession) Send(ctx context.Context, message PTYMessage) error {
+	switch message.Type {
+	case "input":
+	case "resize":
+		if message.Columns == 0 || message.Rows == 0 {
+			return fmt.Errorf("%w: PTY resize dimensions must be positive", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported PTY client message", ErrInvalid)
+	}
+	if err := wsjson.Write(ctx, s.conn, message); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: PTY write failed", ErrUnavailable)
+	}
+	return nil
+}
+
+func (s *httpPTYSession) Receive(ctx context.Context) (PTYMessage, error) {
+	var message PTYMessage
+	if err := wsjson.Read(ctx, s.conn, &message); err != nil {
+		if ctx.Err() != nil {
+			return PTYMessage{}, ctx.Err()
+		}
+		return PTYMessage{}, fmt.Errorf("%w: PTY read failed", ErrUnavailable)
+	}
+	switch message.Type {
+	case "output", "exit", "error":
+		return message, nil
+	default:
+		return PTYMessage{}, fmt.Errorf("%w: unsupported PTY runtime message", ErrUnavailable)
+	}
+}
+
+func (s *httpPTYSession) Close() error {
+	s.conn.CloseNow()
+	return nil
+}
+
+func (b *httpBackendClient) OpenPTY(ctx context.Context, id string, request PTYRequest) (PTYSession, error) {
+	if id == "" || request.ID == "" || request.Command == "" || request.Columns == 0 || request.Rows == 0 {
+		return nil, fmt.Errorf("%w: sandbox, session, command and terminal dimensions are required", ErrInvalid)
+	}
+	if request.Deadline.IsZero() || !request.Deadline.After(time.Now()) {
+		return nil, context.DeadlineExceeded
+	}
+	endpoint, err := url.Parse(b.dataEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid PTY endpoint", ErrInvalid)
+	}
+	switch endpoint.Scheme {
+	case "http":
+		endpoint.Scheme = "ws"
+	case "https":
+		endpoint.Scheme = "wss"
+	default:
+		return nil, fmt.Errorf("%w: invalid PTY endpoint scheme", ErrInvalid)
+	}
+	endpoint.RawPath = strings.TrimRight(endpoint.EscapedPath(), "/") + "/sandboxes/" + url.PathEscape(id) + "/pty"
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/sandboxes/" + id + "/pty"
+	headers := http.Header{}
+	if b.key != "" {
+		headers.Set("X-API-Key", b.key)
+	}
+	conn, response, err := websocket.Dial(ctx, endpoint.String(), &websocket.DialOptions{HTTPHeader: headers})
+	if err != nil {
+		if response != nil {
+			defer response.Body.Close()
+			if statusErr := httpResponseError(response.StatusCode); statusErr != nil {
+				return nil, statusErr
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: PTY handshake failed", ErrUnavailable)
+	}
+	conn.SetReadLimit(maxHTTPEventBytes)
+	start := struct {
+		Type             string            `json:"type"`
+		SessionID        string            `json:"sessionID"`
+		Command          string            `json:"command"`
+		EnvVars          map[string]string `json:"envVars,omitempty"`
+		Columns          uint16            `json:"columns"`
+		Rows             uint16            `json:"rows"`
+		DeadlineUnixNano int64             `json:"deadlineUnixNano"`
+	}{"start", request.ID, request.Command, request.EnvVars, request.Columns, request.Rows, request.Deadline.UnixNano()}
+	if err := wsjson.Write(ctx, conn, start); err != nil {
+		conn.CloseNow()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: PTY start failed", ErrUnavailable)
+	}
+	return &httpPTYSession{conn: conn}, nil
 }
