@@ -1,0 +1,43 @@
+name: Local testing
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: control/go.mod
+          cache-dependency-path: control/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: guest/runner/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native tooling
+        run: |
+          brew install protobuf
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Prepare local dependencies and envtest
+        run: make dev-bootstrap
+      - name: Native unit and control-plane integration tests
+        run: make test-mac
+      - name: Go race checks
+        run: make test-race

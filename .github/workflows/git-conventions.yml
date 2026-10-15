@@ -1,0 +1,48 @@
+name: Git conventions
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate PR title and branch
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BRANCH: ${{ github.head_ref }}
+        run: |
+          python3 scripts/git-workflow.py check-message "$PR_TITLE"
+          python3 scripts/git-workflow.py check-branch "$PR_BRANCH"
+      - name: Validate main commit title
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/git-workflow.py check-message "$(git log -1 --format=%s)"
+      - name: Validate package versions
+        run: python3 scripts/git-workflow.py check-version
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/git-workflow.py check-version --tag "$RELEASE_TAG"
+          test "$(git cat-file -t "$RELEASE_TAG")" = tag
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Test Git workflow commands
+        run: make test-git-workflow
