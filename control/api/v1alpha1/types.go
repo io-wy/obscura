@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -9,9 +10,96 @@ import (
 var GroupVersion = schema.GroupVersion{Group: "sandbox.obscura.dev", Version: "v1alpha1"}
 
 func AddToScheme(s *runtime.Scheme) error {
-	s.AddKnownTypes(GroupVersion, &Sandbox{}, &SandboxList{}, &SandboxRuntime{}, &SandboxRuntimeList{})
+	s.AddKnownTypes(GroupVersion, &Sandbox{}, &SandboxList{}, &SandboxRuntime{}, &SandboxRuntimeList{}, &SandboxTenant{}, &SandboxTenantList{})
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil
+}
+
+type TenantQuota struct {
+	// +kubebuilder:validation:Minimum=1
+	MaxSandboxes int32 `json:"maxSandboxes"`
+	// Zero disables the corresponding resource ceiling for template-sized backends.
+	// +kubebuilder:validation:Minimum=0
+	MaxVCPUsPerSandbox int32 `json:"maxVcpusPerSandbox,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxMemoryMiBPerSandbox int32 `json:"maxMemoryMiBPerSandbox,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxDiskMiBPerSandbox int64 `json:"maxDiskMiBPerSandbox,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxTotalVCPUs int64 `json:"maxTotalVcpus,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxTotalMemoryMiB int64 `json:"maxTotalMemoryMiB,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxTotalDiskMiB int64 `json:"maxTotalDiskMiB,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=86400
+	MaxTimeoutSeconds int64 `json:"maxTimeoutSeconds"`
+	// +kubebuilder:validation:Minimum=1
+	MaxConcurrentExecutions int32 `json:"maxConcurrentExecutions"`
+	// +kubebuilder:validation:Minimum=1
+	MaxConcurrentPTY int32 `json:"maxConcurrentPty"`
+}
+
+type SandboxTenantSpec struct {
+	// Namespace is exclusively owned by this tenant.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace"`
+	// Credentials reference Secrets in the Gateway authentication namespace.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	Credentials []corev1.SecretKeySelector `json:"credentials"`
+	Quota       TenantQuota                `json:"quota"`
+}
+
+type TenantAllocation struct {
+	SandboxID  string       `json:"sandboxID"`
+	SpecHash   string       `json:"specHash"`
+	Resources  ResourceSpec `json:"resources,omitempty"`
+	ReservedAt metav1.Time  `json:"reservedAt"`
+}
+
+type TenantSessionLease struct {
+	ID        string `json:"id"`
+	SandboxID string `json:"sandboxID"`
+	// +kubebuilder:validation:Enum=execution;pty
+	Kind      string      `json:"kind"`
+	ExpiresAt metav1.Time `json:"expiresAt"`
+}
+
+type SandboxTenantStatus struct {
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// SHA-256 digests derived by the Tenant reconciler; raw API keys never enter the CR.
+	// +listType=set
+	CredentialHashes []string `json:"credentialHashes,omitempty"`
+	// +listType=map
+	// +listMapKey=sandboxID
+	Allocations []TenantAllocation `json:"allocations,omitempty"`
+	// +listType=map
+	// +listMapKey=id
+	Sessions []TenantSessionLease `json:"sessions,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:validation:XValidation:rule="self.namespace == oldSelf.namespace",message="tenant namespace is immutable"
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster,shortName=sbt
+// +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.namespace`
+type SandboxTenant struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              SandboxTenantSpec   `json:"spec"`
+	Status            SandboxTenantStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type SandboxTenantList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []SandboxTenant `json:"items"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="sandbox launch specification is immutable; create a new sandbox to change it"
