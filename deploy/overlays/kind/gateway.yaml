@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obscura-gateway
+spec:
+  template:
+    spec:
+      nodeSelector:
+        obscura.dev/runtime-node: 'true'
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+      volumes:
+        - name: runtime-socket
+          hostPath:
+            path: /run/obscura
+            type: Directory
+      containers:
+        - name: gateway
+          volumeMounts:
+            - name: runtime-socket
+              mountPath: /run/obscura
+              readOnly: true

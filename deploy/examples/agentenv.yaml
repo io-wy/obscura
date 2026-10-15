@@ -1,0 +1,27 @@
+# This profile requires the documented E2B v2 discovery contract. Verify your
+# selected AgentENV version exposes it before enabling this example.
+apiVersion: sandbox.obscura.dev/v1alpha1
+kind: SandboxRuntime
+metadata:
+  name: agentenv
+  namespace: obscura-system
+spec:
+  config:
+    type: agentenv
+    endpoint: http://agentenv-gateway.agentenv.svc.cluster.local
+    apiKeySecretName: agentenv-key
+  templates:
+    dev: your-agentenv-template-id
+---
+apiVersion: sandbox.obscura.dev/v1alpha1
+kind: Sandbox
+metadata:
+  name: agentenv-demo
+  namespace: obscura-system
+spec:
+  runtimeRef: agentenv
+  templateRef: dev
+  # This API takes its resource size from the backend template.
+  network:
+    allowEgress: true
+  timeoutSeconds: 300

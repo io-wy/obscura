@@ -1,0 +1,27 @@
+apiVersion: sandbox.obscura.dev/v1alpha1
+kind: SandboxRuntime
+metadata:
+  name: obscura
+  namespace: obscura-system
+spec:
+  config:
+    type: obscura
+    endpoint: unix:///run/obscura/node.sock
+  templates:
+    dev: guest:local
+---
+apiVersion: sandbox.obscura.dev/v1alpha1
+kind: Sandbox
+metadata:
+  name: demo
+  namespace: obscura-system
+spec:
+  runtimeRef: obscura
+  templateRef: dev
+  resources:
+    vcpus: 1
+    memoryMiB: 512
+    diskMiB: 2048
+  network:
+    allowEgress: false
+  timeoutSeconds: 300

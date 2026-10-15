@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obscura-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: obscura-gateway
+  template:
+    metadata:
+      labels:
+        app: obscura-gateway
+    spec:
+      serviceAccountName: obscura-gateway
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: obscura-control:dev
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/gateway]
+          args: [--namespace=obscura-system, --listen=:9000]
+          env:
+            - name: OBSCURA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: obscura-gateway-key
+                  key: api-key
+          ports:
+            - name: http
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests: {cpu: 100m, memory: 64Mi}
+            limits: {cpu: '1', memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: obscura-gateway
+spec:
+  selector:
+    app: obscura-gateway
+  ports:
+    - name: http
+      port: 9000
+      targetPort: http

@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obscura-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: obscura-controller
+rules:
+  - apiGroups: [sandbox.obscura.dev]
+    resources: [sandboxes, sandboxes/finalizers]
+    verbs: [get, list, watch, update, patch, delete]
+  - apiGroups: [sandbox.obscura.dev]
+    resources: [sandboxes/status]
+    verbs: [get, update, patch]
+  - apiGroups: [sandbox.obscura.dev]
+    resources: [sandboxruntimes]
+    verbs: [get, list, watch]
+  - apiGroups: ['']
+    resources: [secrets]
+    verbs: [get]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: obscura-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: obscura-controller
+subjects:
+  - kind: ServiceAccount
+    name: obscura-controller
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obscura-gateway
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: obscura-gateway
+rules:
+  - apiGroups: [sandbox.obscura.dev]
+    resources: [sandboxes]
+    verbs: [get, create, delete]
+  - apiGroups: ['']
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: obscura-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: obscura-gateway
+subjects:
+  - kind: ServiceAccount
+    name: obscura-gateway

@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obscura-devruntime
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: obscura-devruntime
+  template:
+    metadata:
+      labels:
+        app: obscura-devruntime
+    spec:
+      nodeSelector:
+        obscura.dev/runtime-node: 'true'
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: devruntime
+          image: obscura-devruntime:dev
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/devruntime]
+          args: [--socket=/run/obscura/node.sock, --health-listen=:9001]
+          ports:
+            - name: health
+              containerPort: 9001
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          volumeMounts:
+            - name: runtime-socket
+              mountPath: /run/obscura
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: runtime-socket
+          hostPath:
+            path: /run/obscura
+            type: DirectoryOrCreate

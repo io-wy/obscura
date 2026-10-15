@@ -1,0 +1,14 @@
+.git
+.tools
+**/target
+**/node_modules
+**/dist
+**/__pycache__
+runtime
+guest
+templates
+docs
+gen
+shared
+.claude
+.github

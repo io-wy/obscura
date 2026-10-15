@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obscura-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: obscura-controller
+  template:
+    metadata:
+      labels:
+        app: obscura-controller
+    spec:
+      serviceAccountName: obscura-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: obscura-control:dev
+          imagePullPolicy: IfNotPresent
+          args: [--namespace=obscura-system, --leader-elect=true]
+          ports:
+            - name: probes
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

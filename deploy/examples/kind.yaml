@@ -1,0 +1,11 @@
+apiVersion: sandbox.obscura.dev/v1alpha1
+kind: SandboxRuntime
+metadata:
+  name: local
+  namespace: obscura-system
+spec:
+  config:
+    type: obscura
+    endpoint: unix:///run/obscura/node.sock
+  templates:
+    dev: local-simulation

@@ -1,0 +1,20 @@
+# Docker Compose runs the portable API/control-plane test suite in a Linux container.
+# Kind owns the Kubernetes test cluster; see docs/testing.md.
+services:
+  control-tests:
+    build:
+      context: .
+      dockerfile: control/Dockerfile
+      target: control-tests
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    init: true
+    environment:
+      ENVTEST_K8S_VERSION: 1.35.0
+      GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    volumes:
+      - envtest-cache:/root/.local/share/kubebuilder-envtest
+    command: [make, test-controlplane]
+
+volumes:
+  envtest-cache:
