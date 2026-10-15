@@ -119,6 +119,20 @@ spec:
                         type: string
                       apiKeySecretName:
                         type: string
+                      apiVersion:
+                        maxLength: 128
+                        type: string
+                      controlEndpoint:
+                        description: |-
+                          ControlEndpoint and DataEndpoint are separate when a provider's lifecycle
+                          API and session/envd API are served by different services.
+                        maxLength: 2048
+                        minLength: 1
+                        type: string
+                      dataEndpoint:
+                        maxLength: 2048
+                        minLength: 1
+                        type: string
                       endpoint:
                         maxLength: 2048
                         minLength: 1
@@ -128,13 +142,16 @@ spec:
                         - obscura
                         - native
                         - agentenv
+                        - opensandbox
                         - cubesandbox
                         - e2b
                         type: string
                     required:
-                    - endpoint
                     - type
                     type: object
+                    x-kubernetes-validations:
+                    - message: endpoint or controlEndpoint is required
+                      rule: has(self.endpoint) || has(self.controlEndpoint)
                   creationStarted:
                     type: boolean
                   handle:

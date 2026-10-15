@@ -280,6 +280,73 @@ func TestHTTPExecutionCancellationReachesRuntime(t *testing.T) {
 		t.Fatal("runtime request was not cancelled")
 	}
 }
+
+func TestHTTPFileReadWriteContract(t *testing.T) {
+	var calls []string
+	b := httpBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.EscapedPath()+"?"+r.URL.RawQuery)
+		if r.URL.EscapedPath() != "/sandboxes/remote%2Fid/files" || r.URL.Query().Get("path") != "/work/a b.txt" {
+			t.Errorf("URL: %s", r.URL.String())
+		}
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", "4")
+			_, _ = w.Write([]byte{0, 1, 2, 3})
+		case http.MethodPut:
+			if r.Header.Get("Content-Type") != "text/plain" || r.ContentLength != 5 {
+				t.Errorf("write headers: %v length=%d", r.Header, r.ContentLength)
+			}
+			data, _ := io.ReadAll(r.Body)
+			if string(data) != "hello" {
+				t.Errorf("write body: %q", data)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	files := b.(FileSystem)
+	read, err := files.ReadFile(context.Background(), "remote/id", "/work/a b.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(read.Body)
+	_ = read.Body.Close()
+	if err != nil || !reflect.DeepEqual(data, []byte{0, 1, 2, 3}) || read.Size != 4 || read.ContentType != "application/octet-stream" {
+		t.Fatalf("read=%+v data=%v err=%v", read, data, err)
+	}
+	if err := files.WriteFile(context.Background(), "remote/id", FileWrite{Path: "/work/a b.txt", Body: strings.NewReader("hello"), Size: 5, ContentType: "text/plain"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls: %v", calls)
+	}
+}
+
+func TestHTTPFilesRejectInvalidPathsAndSizes(t *testing.T) {
+	called := false
+	b := httpBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Header().Set("Content-Length", "33554433")
+		w.WriteHeader(http.StatusOK)
+	})
+	files := b.(FileSystem)
+	for _, invalid := range []string{"relative", "/work/../secret", "/work//file", ""} {
+		if _, err := files.ReadFile(context.Background(), "sandbox", invalid); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("path %q: %v", invalid, err)
+		}
+	}
+	if called {
+		t.Fatal("invalid path reached runtime")
+	}
+	if _, err := files.ReadFile(context.Background(), "sandbox", "/file"); !errors.Is(err, ErrLimit) {
+		t.Fatalf("oversized read: %v", err)
+	}
+	if err := files.WriteFile(context.Background(), "sandbox", FileWrite{Path: "/file", Body: strings.NewReader("x"), Size: (32 << 20) + 1}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("oversized write: %v", err)
+	}
+}
 func TestRegistryLoadsNamespacedSecret(t *testing.T) {
 	scheme := runtime.NewScheme()
 	corev1.AddToScheme(scheme)
@@ -303,6 +370,30 @@ func TestRegistryLoadsNamespacedSecret(t *testing.T) {
 	}
 	if _, err := NewRegistry(reader).Open(context.Background(), "other", config); err == nil {
 		t.Fatal("cross namespace credential accepted")
+	}
+}
+
+func TestRegistrySeparatesControlAndDataEndpoints(t *testing.T) {
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer control.Close()
+	data := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer data.Close()
+
+	b, err := NewRegistry(nil).Open(context.Background(), "test", Config{Type: "agentenv", ControlEndpoint: control.URL, DataEndpoint: data.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	executor, ok := b.(Executor)
+	if !ok {
+		t.Fatal("agentenv backend must expose the legacy executor contract")
+	}
+	if err := executor.Exec(context.Background(), "sandbox", Execution{ID: "exec", Command: "true", Deadline: time.Now().Add(time.Second)}, func(Event) error { return nil }); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("execution error = %v, want data endpoint 404", err)
 	}
 }
 

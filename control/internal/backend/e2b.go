@@ -11,6 +11,8 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
+	"strings"
 	"time"
 )
 
@@ -19,9 +21,10 @@ import (
 // See https://github.com/e2b-dev/E2B/blob/main/spec/openapi.yml. Deployments lacking
 // this versioned discovery contract fail closed; there is no unsafe v1 list fallback.
 type httpBackendClient struct {
-	endpoint string
-	key      string
-	client   *http.Client
+	endpoint     string
+	dataEndpoint string
+	key          string
+	client       *http.Client
 }
 type remoteSandbox struct {
 	ID       string            `json:"sandboxID"`
@@ -32,6 +35,7 @@ type remoteSandbox struct {
 const (
 	maxHTTPEventBytes  = 256 << 10
 	maxHTTPOutputBytes = 16 << 20
+	maxHTTPFileBytes   = 32 << 20
 )
 
 func (b *httpBackendClient) Close() error { b.client.CloseIdleConnections(); return nil }
@@ -257,7 +261,7 @@ func (b *httpBackendClient) Exec(ctx context.Context, id string, execution Execu
 	if err != nil {
 		return fmt.Errorf("%w: encode execution request", ErrInvalid)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.endpoint+"/sandboxes/"+url.PathEscape(id)+"/commands", bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.dataEndpoint+"/sandboxes/"+url.PathEscape(id)+"/commands", bytes.NewReader(encoded))
 	if err != nil {
 		return fmt.Errorf("%w: invalid execution request", ErrInvalid)
 	}
@@ -326,4 +330,96 @@ func validEventType(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+func validateFilePath(value string) error {
+	if value == "" || !strings.HasPrefix(value, "/") || path.Clean(value) != value || strings.ContainsRune(value, 0) {
+		return fmt.Errorf("%w: file path must be a normalized absolute path", ErrInvalid)
+	}
+	return nil
+}
+
+func (b *httpBackendClient) ReadFile(ctx context.Context, id, filePath string) (FileRead, error) {
+	if id == "" {
+		return FileRead{}, fmt.Errorf("%w: sandbox handle is required", ErrInvalid)
+	}
+	if err := validateFilePath(filePath); err != nil {
+		return FileRead{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	query := url.Values{"path": {filePath}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.dataEndpoint+"/sandboxes/"+url.PathEscape(id)+"/files?"+query, nil)
+	if err != nil {
+		return FileRead{}, fmt.Errorf("%w: invalid file request", ErrInvalid)
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	if b.key != "" {
+		req.Header.Set("X-API-Key", b.key)
+	}
+	resp, err := b.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return FileRead{}, ctx.Err()
+		}
+		return FileRead{}, fmt.Errorf("%w: runtime file request failed", ErrUnavailable)
+	}
+	defer resp.Body.Close()
+	if err := httpResponseError(resp.StatusCode); err != nil {
+		return FileRead{}, err
+	}
+	if resp.ContentLength > maxHTTPFileBytes {
+		return FileRead{}, fmt.Errorf("%w: runtime file exceeds %d bytes", ErrLimit, maxHTTPFileBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPFileBytes+1))
+	if err != nil {
+		return FileRead{}, fmt.Errorf("%w: runtime file read failed", ErrUnavailable)
+	}
+	if len(data) > maxHTTPFileBytes {
+		return FileRead{}, fmt.Errorf("%w: runtime file exceeds %d bytes", ErrLimit, maxHTTPFileBytes)
+	}
+	return FileRead{Body: io.NopCloser(bytes.NewReader(data)), Size: int64(len(data)), ContentType: resp.Header.Get("Content-Type")}, nil
+}
+
+func (b *httpBackendClient) WriteFile(ctx context.Context, id string, file FileWrite) error {
+	if id == "" || file.Body == nil {
+		return fmt.Errorf("%w: sandbox handle and file body are required", ErrInvalid)
+	}
+	if err := validateFilePath(file.Path); err != nil {
+		return err
+	}
+	if file.Size > maxHTTPFileBytes {
+		return fmt.Errorf("%w: file exceeds %d bytes", ErrLimit, maxHTTPFileBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file.Body, maxHTTPFileBytes+1))
+	if err != nil {
+		return fmt.Errorf("%w: file body cannot be read", ErrInvalid)
+	}
+	if len(data) > maxHTTPFileBytes {
+		return fmt.Errorf("%w: file exceeds %d bytes", ErrLimit, maxHTTPFileBytes)
+	}
+	if file.Size >= 0 && file.Size != int64(len(data)) {
+		return fmt.Errorf("%w: file size does not match body", ErrInvalid)
+	}
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	query := url.Values{"path": {file.Path}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, b.dataEndpoint+"/sandboxes/"+url.PathEscape(id)+"/files?"+query, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("%w: invalid file request", ErrInvalid)
+	}
+	req.Header.Set("Content-Type", file.ContentType)
+	req.Header.Set("Accept", "application/json")
+	if b.key != "" {
+		req.Header.Set("X-API-Key", b.key)
+	}
+	resp, err := b.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: runtime file request failed", ErrUnavailable)
+	}
+	defer resp.Body.Close()
+	return httpResponseError(resp.StatusCode)
 }

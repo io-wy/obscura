@@ -19,6 +19,7 @@ var (
 	ErrRateLimited  = errors.New("backend rate limit reached")
 	ErrCapacity     = errors.New("backend capacity exhausted")
 	ErrUnavailable  = errors.New("backend temporarily unavailable")
+	ErrLimit        = errors.New("backend transfer limit exceeded")
 )
 
 type State string
@@ -33,10 +34,29 @@ const (
 
 // Config contains no credential values and may be persisted with the binding.
 type Config struct {
-	Type             string `json:"type"`
-	Endpoint         string `json:"endpoint"`
+	Type     string `json:"type"`
+	Endpoint string `json:"endpoint"`
+	// ControlEndpoint and DataEndpoint allow providers whose lifecycle API and
+	// execd/envd service are separate. Endpoint remains the legacy control URL.
+	ControlEndpoint  string `json:"controlEndpoint,omitempty"`
+	DataEndpoint     string `json:"dataEndpoint,omitempty"`
+	APIVersion       string `json:"apiVersion,omitempty"`
 	APIKeySecretName string `json:"apiKeySecretName,omitempty"`
 	APIKeySecretKey  string `json:"apiKeySecretKey,omitempty"`
+}
+
+func (c Config) LifecycleEndpoint() string {
+	if c.ControlEndpoint != "" {
+		return c.ControlEndpoint
+	}
+	return c.Endpoint
+}
+
+func (c Config) ExecutionEndpoint() string {
+	if c.DataEndpoint != "" {
+		return c.DataEndpoint
+	}
+	return c.LifecycleEndpoint()
 }
 
 type Resources struct {

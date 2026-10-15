@@ -2,6 +2,7 @@
 package kubegateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const maxFileBytes = 32 << 20
 
 type Gateway struct {
 	Client  client.Client
@@ -36,6 +40,8 @@ func (g *Gateway) Handler() http.Handler {
 	m.HandleFunc("GET /v1/sandboxes/{sandboxID}", g.get)
 	m.HandleFunc("DELETE /v1/sandboxes/{sandboxID}", g.delete)
 	m.HandleFunc("POST /v1/sandboxes/{sandboxID}/execute", g.execute)
+	m.HandleFunc("GET /v1/sandboxes/{sandboxID}/files", g.files)
+	m.HandleFunc("PUT /v1/sandboxes/{sandboxID}/files", g.files)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			m.ServeHTTP(w, r)
@@ -275,14 +281,113 @@ func (g *Gateway) execute(w http.ResponseWriter, r *http.Request) {
 	if err := executor.Exec(ctx, s.Status.Binding.Handle, execution, emit); err != nil {
 		if started {
 			_ = emit(backend.Event{ExecutionID: execution.ID, Type: "transport_error", Error: "runtime execution interrupted"})
-		} else if errors.Is(err, backend.ErrUnsupported) {
-			writeError(w, http.StatusNotImplemented, "capability_unsupported", "runtime does not support execution through this gateway")
 		} else {
-			writeError(w, http.StatusBadGateway, "runtime_execution_unavailable", "runtime execution is unavailable")
+			writeBackendError(w, err, "execution")
 		}
 		return
 	}
 	if !started {
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (g *Gateway) files(w http.ResponseWriter, r *http.Request) {
+	s := g.load(w, r)
+	if s == nil {
+		return
+	}
+	if !s.DeletionTimestamp.IsZero() || s.Status.Phase != "Ready" || s.Status.Binding == nil || s.Status.Binding.Handle == "" || s.Status.Binding.SpecHash != controller.SpecHash(s.Spec) {
+		writeError(w, http.StatusConflict, "sandbox_not_ready", "sandbox is not ready")
+		return
+	}
+	if s.Status.ExpiresAt == nil || !time.Now().Before(s.Status.ExpiresAt.Time) {
+		writeError(w, http.StatusConflict, "sandbox_expired", "sandbox has expired")
+		return
+	}
+	deadline := time.Now().Add(time.Minute)
+	if deadline.After(s.Status.ExpiresAt.Time) {
+		deadline = s.Status.ExpiresAt.Time
+	}
+	ctx, cancel := context.WithDeadline(r.Context(), deadline)
+	defer cancel()
+	if g.Factory == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "runtime is unavailable")
+		return
+	}
+	tenant := tenantFromContext(r.Context())
+	b, err := g.Factory.Open(ctx, tenant.Spec.Namespace, controller.Config(s.Status.Binding.Config))
+	if err != nil {
+		writeBackendError(w, err, "file operation")
+		return
+	}
+	defer b.Close()
+	files, ok := b.(backend.FileSystem)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "capability_unsupported", "runtime does not support file operations through this gateway")
+		return
+	}
+	filePath := r.URL.Query().Get("path")
+	if r.Method == http.MethodGet {
+		file, err := files.ReadFile(ctx, s.Status.Binding.Handle, filePath)
+		if err != nil {
+			writeBackendError(w, err, "file read")
+			return
+		}
+		defer file.Body.Close()
+		if file.Size > maxFileBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "transfer_limit_exceeded", "file exceeds the transfer limit")
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(file.Body, maxFileBytes+1))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "runtime_file_unavailable", "runtime file read failed")
+			return
+		}
+		if len(data) > maxFileBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "transfer_limit_exceeded", "file exceeds the transfer limit")
+			return
+		}
+		contentType := file.ContentType
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, bytes.NewReader(data))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxFileBytes)
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "transfer_limit_exceeded", "file exceeds the transfer limit")
+		return
+	}
+	if err := files.WriteFile(ctx, s.Status.Binding.Handle, backend.FileWrite{Path: filePath, Body: bytes.NewReader(data), Size: int64(len(data)), ContentType: r.Header.Get("Content-Type")}); err != nil {
+		writeBackendError(w, err, "file write")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeBackendError(w http.ResponseWriter, err error, operation string) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		writeError(w, http.StatusGatewayTimeout, "runtime_timeout", "runtime "+operation+" timed out")
+	case errors.Is(err, backend.ErrUnsupported):
+		writeError(w, http.StatusNotImplemented, "capability_unsupported", "runtime does not support this operation")
+	case errors.Is(err, backend.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_request", "runtime rejected the request")
+	case errors.Is(err, backend.ErrNotFound):
+		writeError(w, http.StatusNotFound, "file_not_found", "requested runtime resource was not found")
+	case errors.Is(err, backend.ErrLimit):
+		writeError(w, http.StatusRequestEntityTooLarge, "transfer_limit_exceeded", "operation exceeds the transfer limit")
+	case errors.Is(err, backend.ErrRateLimited):
+		writeError(w, http.StatusServiceUnavailable, "runtime_rate_limited", "runtime is rate limited")
+	case errors.Is(err, backend.ErrAuth):
+		writeError(w, http.StatusBadGateway, "runtime_authentication_failed", "runtime authentication failed")
+	default:
+		writeError(w, http.StatusBadGateway, "runtime_unavailable", "runtime "+operation+" is unavailable")
 	}
 }

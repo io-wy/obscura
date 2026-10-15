@@ -135,12 +135,23 @@ type NetworkPolicy struct {
 	AllowHosts []string `json:"allowHosts,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="has(self.endpoint) || has(self.controlEndpoint)",message="endpoint or controlEndpoint is required"
 type RuntimeConfig struct {
-	// +kubebuilder:validation:Enum=obscura;native;agentenv;cubesandbox;e2b
+	// +kubebuilder:validation:Enum=obscura;native;agentenv;opensandbox;cubesandbox;e2b
 	Type string `json:"type"`
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
-	Endpoint         string `json:"endpoint"`
+	Endpoint string `json:"endpoint,omitempty"`
+	// ControlEndpoint and DataEndpoint are separate when a provider's lifecycle
+	// API and session/envd API are served by different services.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	ControlEndpoint string `json:"controlEndpoint,omitempty"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	DataEndpoint string `json:"dataEndpoint,omitempty"`
+	// +kubebuilder:validation:MaxLength=128
+	APIVersion       string `json:"apiVersion,omitempty"`
 	APIKeySecretName string `json:"apiKeySecretName,omitempty"`
 	APIKeySecretKey  string `json:"apiKeySecretKey,omitempty"`
 }

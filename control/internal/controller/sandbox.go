@@ -33,7 +33,7 @@ type Reconciler struct {
 }
 
 func Config(c api.RuntimeConfig) backend.Config {
-	return backend.Config{Type: c.Type, Endpoint: c.Endpoint, APIKeySecretName: c.APIKeySecretName, APIKeySecretKey: c.APIKeySecretKey}
+	return backend.Config{Type: c.Type, Endpoint: c.Endpoint, ControlEndpoint: c.ControlEndpoint, DataEndpoint: c.DataEndpoint, APIVersion: c.APIVersion, APIKeySecretName: c.APIKeySecretName, APIKeySecretKey: c.APIKeySecretKey}
 }
 
 func SpecHash(s api.SandboxSpec) string {

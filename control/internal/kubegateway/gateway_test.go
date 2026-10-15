@@ -3,6 +3,7 @@ package kubegateway
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -68,6 +69,42 @@ func (f executionFactory) Open(context.Context, string, backend.Config) (backend
 	return f.b, nil
 }
 
+type fileBackend struct {
+	backend.Backend
+	readPath, writePath, written, contentType string
+}
+
+func (b *fileBackend) Close() error { return nil }
+func (b *fileBackend) ReadFile(_ context.Context, _ string, path string) (backend.FileRead, error) {
+	b.readPath = path
+	data := []byte{0, 1, 2, 3}
+	return backend.FileRead{Body: io.NopCloser(strings.NewReader(string(data))), Size: int64(len(data)), ContentType: "application/octet-stream"}, nil
+}
+func (b *fileBackend) WriteFile(_ context.Context, _ string, file backend.FileWrite) error {
+	b.writePath, b.contentType = file.Path, file.ContentType
+	data, err := io.ReadAll(file.Body)
+	b.written = string(data)
+	return err
+}
+
+type backendFactory struct{ b backend.Backend }
+
+func (f backendFactory) Open(context.Context, string, backend.Config) (backend.Backend, error) {
+	return f.b, nil
+}
+
+func readySandbox(t *testing.T, g *Gateway, name string) *api.Sandbox {
+	t.Helper()
+	expires := metav1.NewTime(time.Now().Add(time.Minute))
+	s := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "tenant"}, Spec: api.SandboxSpec{RuntimeRef: "http", TemplateRef: "dev", TimeoutSeconds: 300}}
+	s.Status = api.SandboxStatus{Phase: "Ready", ExpiresAt: &expires, Binding: &api.RuntimeBinding{ID: "uid", Handle: "remote-id", SpecHash: controller.SpecHash(s.Spec), Config: api.RuntimeConfig{Type: "e2b", Endpoint: "http://runtime.test"}}}
+	if err := g.Client.Create(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	reserveSandbox(t, g, s)
+	return s
+}
+
 func TestExecutionStreamsUsingPinnedHandleAndClampsLifetime(t *testing.T) {
 	g := testGateway(t)
 	b := &executionBackend{}
@@ -111,6 +148,25 @@ func TestExecutionInterruptedAfterOutputReportsTransportError(t *testing.T) {
 	w := call(t, g, "POST", "/v1/sandboxes/ready/execute", `{"command":"echo hello"}`, "secret", "")
 	if w.Code != http.StatusOK || b.calls != 1 || !strings.Contains(w.Body.String(), `"type":"stdout"`) || !strings.Contains(w.Body.String(), `"type":"transport_error"`) {
 		t.Fatalf("interrupted execution: status=%d body=%s calls=%d", w.Code, w.Body.String(), b.calls)
+	}
+}
+
+func TestFileReadWriteRoutes(t *testing.T) {
+	g := testGateway(t)
+	b := &fileBackend{}
+	g.Factory = backendFactory{b: b}
+	readySandbox(t, g, "files")
+	w := call(t, g, http.MethodGet, "/v1/sandboxes/files/files?path=%2Fwork%2Fa.txt", "", "secret", "")
+	if w.Code != http.StatusOK || !strings.EqualFold(w.Header().Get("Content-Type"), "application/octet-stream") || w.Body.Len() != 4 || b.readPath != "/work/a.txt" {
+		t.Fatalf("read: status=%d headers=%v body=%v path=%q", w.Code, w.Header(), w.Body.Bytes(), b.readPath)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/v1/sandboxes/files/files?path=%2Fwork%2Fa.txt", strings.NewReader("hello"))
+	req.Header.Set("X-API-Key", "secret")
+	req.Header.Set("Content-Type", "text/plain")
+	w = httptest.NewRecorder()
+	g.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent || b.writePath != "/work/a.txt" || b.written != "hello" || b.contentType != "text/plain" {
+		t.Fatalf("write: status=%d body=%s path=%q data=%q type=%q", w.Code, w.Body.String(), b.writePath, b.written, b.contentType)
 	}
 }
 
