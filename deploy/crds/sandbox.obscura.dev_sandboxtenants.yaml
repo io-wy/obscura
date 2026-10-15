@@ -164,10 +164,14 @@ spec:
                       type: string
                     specHash:
                       type: string
+                    timeoutSeconds:
+                      format: int64
+                      type: integer
                   required:
                   - reservedAt
                   - sandboxID
                   - specHash
+                  - timeoutSeconds
                   type: object
                 type: array
                 x-kubernetes-list-map-keys:

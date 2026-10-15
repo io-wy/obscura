@@ -53,10 +53,11 @@ type SandboxTenantSpec struct {
 }
 
 type TenantAllocation struct {
-	SandboxID  string       `json:"sandboxID"`
-	SpecHash   string       `json:"specHash"`
-	Resources  ResourceSpec `json:"resources,omitempty"`
-	ReservedAt metav1.Time  `json:"reservedAt"`
+	SandboxID      string        `json:"sandboxID"`
+	SpecHash       string        `json:"specHash"`
+	Resources      *ResourceSpec `json:"resources,omitempty"`
+	TimeoutSeconds int64         `json:"timeoutSeconds"`
+	ReservedAt     metav1.Time   `json:"reservedAt"`
 }
 
 type TenantSessionLease struct {
