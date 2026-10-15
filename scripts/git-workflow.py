@@ -11,7 +11,7 @@ import sys
 
 TYPES = "feat fix docs refactor perf test build ci chore revert".split()
 TYPE_PATTERN = "(?:" + "|".join(TYPES) + ")"
-BRANCH = re.compile(r"(?:codex/)?" + TYPE_PATTERN + r"/[a-z0-9]+(?:-[a-z0-9]+)*")
+BRANCH = re.compile(TYPE_PATTERN + r"/[a-z0-9]+(?:-[a-z0-9]+)*")
 MESSAGE = re.compile(TYPE_PATTERN + r"(?:\([a-z0-9]+(?:[-/][a-z0-9]+)*\))?!?: \S(?:.*\S)?")
 NUMBER = r"(?:0|[1-9][0-9]*)"
 VERSION = re.compile(NUMBER + r"\." + NUMBER + r"\." + NUMBER + r"(?:-rc\.[1-9][0-9]*)?")
@@ -43,7 +43,7 @@ def check_message(message):
 
 def check_branch(branch):
     require(BRANCH.fullmatch(branch) is not None,
-            "Use [codex/]<type>/<lowercase-slug>, e.g. codex/feat/runtime-adapter")
+            "Use <type>/<lowercase-slug>, e.g. feat/runtime-adapter")
 
 
 def topic_branch():
@@ -97,7 +97,7 @@ def check_version(tag=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    branch = commands.add_parser("branch", help="Create and switch to codex/<type>/<slug>")
+    branch = commands.add_parser("branch", help="Create and switch to <type>/<slug>")
     branch.add_argument("type", choices=TYPES)
     branch.add_argument("slug")
     branch.add_argument("--base", default="HEAD", help="Starting ref; defaults to current HEAD")
@@ -137,7 +137,7 @@ def main():
 
     os.chdir(git("rev-parse", "--show-toplevel"))
     if args.command == "branch":
-        name = "codex/" + args.type + "/" + args.slug
+        name = args.type + "/" + args.slug
         check_branch(name)
         # Resolve first so a ref supplied by the caller cannot become a switch flag.
         base = git("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}")

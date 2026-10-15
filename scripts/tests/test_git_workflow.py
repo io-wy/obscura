@@ -49,8 +49,12 @@ class WorkflowTests(unittest.TestCase):
         self.run_cli("branch", "feat", "Bad Name", ok=False)
         self.run_cli("branch", "feat", "example", "--base=--discard-changes", ok=False)
         self.branch()
-        self.assertEqual(self.git("branch", "--show-current"), "codex/feat/example")
+        self.assertEqual(self.git("branch", "--show-current"), "feat/example")
         self.assertEqual((self.repo / "pending").read_text(), "keep me")
+
+    def test_old_branch_prefix_is_rejected(self):
+        self.run_cli("check-branch", "feat/example")
+        self.run_cli("check-branch", "codex/feat/example", ok=False)
 
     def test_protected_branch_and_invalid_message_refuse_mutation(self):
         before = self.git("rev-parse", "HEAD")
@@ -70,7 +74,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.git("show", "--pretty=", "--name-only", "HEAD"), "chosen")
         self.assertIn("?? unrelated", self.git("status", "--short"))
         self.assertEqual(self.git("rev-parse", "HEAD"),
-                         self.git("rev-parse", "origin/codex/feat/example"))
+                         self.git("rev-parse", "origin/feat/example"))
 
     def test_staged_only_and_refuse_mixing_paths(self):
         self.branch()
@@ -158,7 +162,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.git("status", "--porcelain"), "")
         reject.unlink()
         self.run_cli("push")
-        self.assertEqual(self.git("rev-parse", "origin/codex/feat/example"), after)
+        self.assertEqual(self.git("rev-parse", "origin/feat/example"), after)
 
     def test_tag_push_retry_publishes_only_selected_tag(self):
         self.git("tag", "unrelated")

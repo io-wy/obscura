@@ -5,8 +5,7 @@
 
 ## 分支
 
-- 命名：`<type>/<slug>`，Codex 创建的分支加 `codex/` 前缀，例如
-  `codex/feat/runtime-adapter`、`fix/sandbox-timeout`。
+- 命名：`<type>/<slug>`，例如 `feat/runtime-adapter`、`fix/sandbox-timeout`。
 - type 使用下表中的提交类型；slug 使用小写英文、数字和连字符。
 - 一个分支聚焦一件事，合并后删除；暂不引入长期 `develop` 或 `release/*` 分支。
 - 开始新工作前更新 `main`：`git switch main && git pull --ff-only`。

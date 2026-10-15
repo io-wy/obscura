@@ -7,8 +7,8 @@ argument-hint: [提交范围或文件]
 
 1. 检查 `git status --short`、分支、完整暂存 diff，以及相关未暂存或未跟踪改动。
    确定用户指定范围并保留无关工作。不要默认使用 `git add .` 或 `git add -A`。
-2. 使用符合 `[codex/]<type>/<slug>` 的主题分支。若当前在 main，提交前先通过
-   branch 命令从当前 HEAD 创建 `codex/<type>/<slug>` 分支。
+2. 使用符合 `<type>/<slug>` 的主题分支。若当前在 main，提交前先通过
+   branch 命令从当前 HEAD 创建 `<type>/<slug>` 分支。
 3. 评审实际补丁的正确性和敏感信息。按 CONTRIBUTING.md 对受影响模块运行检查，
    报告无法运行的具体检查；不得声称未运行的检查通过。
 4. 选择准确的 Conventional Commit 标题。如果暂存区为空，执行

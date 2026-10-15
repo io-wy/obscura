@@ -6,7 +6,7 @@ argument-hint: [改动范围] [是否准备好评审]
 阅读 CONTRIBUTING.md 和 .github/pull_request_template.md。用户指定范围：$ARGUMENTS
 
 1. 检查分支、工作区、相对 main 的 diff 和提交。若当前在 main，使用 branch 命令
-   创建合适的 `codex/<type>/<slug>` 分支，并保留本地改动。
+   创建合适的 `<type>/<slug>` 分支，并保留本地改动。
 2. 评审正确性，运行 CONTRIBUTING.md 中对应的验证。若指定范围内的改动还需提交
    和推送，按仓库 commit-push 命令流程操作，显式列出文件并使用 Conventional
    Commit 标题。调用 `/pr` 授权为指定工作做这些准备并创建 PR。保留无关工作；
