@@ -58,7 +58,7 @@ func (r *Registry) Open(ctx context.Context, namespace string, config Config) (B
 			return nil, fmt.Errorf("%w: API key Secret name is required", ErrAuth)
 		}
 		transport := http.DefaultTransport.(*http.Transport).Clone()
-		return &httpBackendClient{endpoint: strings.TrimRight(endpoint.String(), "/"), key: key, client: &http.Client{Timeout: operationTimeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+		return &httpBackendClient{endpoint: strings.TrimRight(endpoint.String(), "/"), key: key, client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 	default:
 		return nil, fmt.Errorf("%w: unknown runtime type", ErrUnsupported)
 	}

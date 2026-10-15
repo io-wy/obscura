@@ -1,14 +1,17 @@
 package backend
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // httpBackendClient implements the E2B lifecycle subset, not envd or full SDK compatibility.
@@ -25,6 +28,11 @@ type remoteSandbox struct {
 	State    string            `json:"state"`
 	Metadata map[string]string `json:"metadata"`
 }
+
+const (
+	maxHTTPEventBytes  = 256 << 10
+	maxHTTPOutputBytes = 16 << 20
+)
 
 func (b *httpBackendClient) Close() error { b.client.CloseIdleConnections(); return nil }
 func (b *httpBackendClient) Validate(r Request) error {
@@ -45,6 +53,8 @@ func (b *httpBackendClient) Validate(r Request) error {
 	return nil
 }
 func (b *httpBackendClient) request(ctx context.Context, method, path string, body any, out any) (http.Header, error) {
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
 	var data io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -69,28 +79,8 @@ func (b *httpBackendClient) request(ctx context.Context, method, path string, bo
 		return nil, fmt.Errorf("%w: runtime HTTP request failed", ErrUnavailable)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 404 {
-		return resp.Header, ErrNotFound
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var category error
-		switch resp.StatusCode {
-		case http.StatusBadRequest, http.StatusUnprocessableEntity:
-			category = ErrInvalid
-		case http.StatusUnauthorized, http.StatusForbidden:
-			category = ErrAuth
-		case http.StatusConflict:
-			category = ErrConflict
-		case http.StatusTooManyRequests:
-			category = ErrRateLimited
-		default:
-			if resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout {
-				category = ErrUnavailable
-			} else {
-				category = ErrUnsupported
-			}
-		}
-		return resp.Header, fmt.Errorf("%w: runtime HTTP status %d", category, resp.StatusCode)
+	if err := httpResponseError(resp.StatusCode); err != nil {
+		return resp.Header, err
 	}
 	if out != nil {
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out); err != nil {
@@ -98,6 +88,33 @@ func (b *httpBackendClient) request(ctx context.Context, method, path string, bo
 		}
 	}
 	return resp.Header, nil
+}
+
+func httpResponseError(status int) error {
+	if status >= 200 && status < 300 {
+		return nil
+	}
+	if status == http.StatusNotFound {
+		return ErrNotFound
+	}
+	var category error
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		category = ErrInvalid
+	case http.StatusUnauthorized, http.StatusForbidden:
+		category = ErrAuth
+	case http.StatusConflict:
+		category = ErrConflict
+	case http.StatusTooManyRequests:
+		category = ErrRateLimited
+	default:
+		if status >= 500 || status == http.StatusRequestTimeout {
+			category = ErrUnavailable
+		} else {
+			category = ErrUnsupported
+		}
+	}
+	return fmt.Errorf("%w: runtime HTTP status %d", category, status)
 }
 func (b *httpBackendClient) discover(ctx context.Context, r Request) (Observation, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
@@ -217,6 +234,96 @@ func (b *httpBackendClient) Delete(ctx context.Context, id string) (bool, error)
 	}
 	return false, err
 }
-func (b *httpBackendClient) Exec(context.Context, string, Execution, func(Event) error) error {
-	return fmt.Errorf("%w: envd sessions are not implemented", ErrUnsupported)
+func (b *httpBackendClient) Exec(ctx context.Context, id string, execution Execution, emit func(Event) error) error {
+	if id == "" || execution.ID == "" || execution.Command == "" || emit == nil {
+		return fmt.Errorf("%w: sandbox, execution, command and event receiver are required", ErrInvalid)
+	}
+	if !execution.Deadline.IsZero() {
+		if !execution.Deadline.After(time.Now()) {
+			return context.DeadlineExceeded
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, execution.Deadline)
+		defer cancel()
+	}
+	body := struct {
+		ExecutionID      string            `json:"executionID"`
+		Command          string            `json:"command"`
+		Input            string            `json:"input,omitempty"`
+		EnvVars          map[string]string `json:"envVars,omitempty"`
+		DeadlineUnixNano int64             `json:"deadlineUnixNano"`
+	}{execution.ID, execution.Command, string(execution.Input), execution.EnvVars, execution.Deadline.UnixNano()}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("%w: encode execution request", ErrInvalid)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.endpoint+"/sandboxes/"+url.PathEscape(id)+"/commands", bytes.NewReader(encoded))
+	if err != nil {
+		return fmt.Errorf("%w: invalid execution request", ErrInvalid)
+	}
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("Content-Type", "application/json")
+	if b.key != "" {
+		req.Header.Set("X-API-Key", b.key)
+	}
+	resp, err := b.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: runtime execution request failed", ErrUnavailable)
+	}
+	defer resp.Body.Close()
+	if err := httpResponseError(resp.StatusCode); err != nil {
+		return err
+	}
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/x-ndjson" {
+		return fmt.Errorf("%w: runtime execution response is not NDJSON", ErrUnavailable)
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64<<10), maxHTTPEventBytes)
+	var sequence uint64
+	var outputBytes int
+	for scanner.Scan() {
+		decoder := json.NewDecoder(bytes.NewReader(scanner.Bytes()))
+		decoder.DisallowUnknownFields()
+		var event Event
+		if err := decoder.Decode(&event); err != nil {
+			return fmt.Errorf("%w: invalid runtime execution event", ErrUnavailable)
+		}
+		if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+			return fmt.Errorf("%w: invalid trailing runtime event data", ErrUnavailable)
+		}
+		if event.ExecutionID != execution.ID || event.Sequence != sequence+1 || !validEventType(event.Type) {
+			return fmt.Errorf("%w: invalid runtime execution event identity or sequence", ErrUnavailable)
+		}
+		sequence = event.Sequence
+		outputBytes += len(event.Payload) + len(event.Error)
+		if outputBytes > maxHTTPOutputBytes {
+			return fmt.Errorf("%w: runtime execution output limit exceeded", ErrUnavailable)
+		}
+		if err := emit(event); err != nil {
+			return err
+		}
+		if event.Type == "result" || event.Type == "error" {
+			return nil
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("%w: runtime execution stream failed", ErrUnavailable)
+	}
+	return fmt.Errorf("%w: runtime execution stream ended before a terminal event", ErrUnavailable)
+}
+
+func validEventType(eventType string) bool {
+	switch eventType {
+	case "started", "stdout", "stderr", "result", "error":
+		return true
+	default:
+		return false
+	}
 }

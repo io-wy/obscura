@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -184,12 +186,98 @@ func TestHTTPRejectsUnsupportedRequests(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	}
-	executor, ok := b.(Executor)
-	if !ok {
-		t.Fatal("HTTP backend does not expose its execution capability")
+}
+
+func TestHTTPExecutionRequestAndFragmentedStream(t *testing.T) {
+	deadline := time.Now().Add(time.Minute).Round(0)
+	b := httpBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.EscapedPath() != "/sandboxes/remote%2Fid/commands" {
+			t.Errorf("request: %s %s", r.Method, r.URL.EscapedPath())
+		}
+		if r.Header.Get("Accept") != "application/x-ndjson" || r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("headers: %v", r.Header)
+		}
+		var body struct {
+			ExecutionID      string            `json:"executionID"`
+			Command          string            `json:"command"`
+			Input            string            `json:"input"`
+			EnvVars          map[string]string `json:"envVars"`
+			DeadlineUnixNano int64             `json:"deadlineUnixNano"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil || body.ExecutionID != "exec" || body.Command != "echo hi" || body.Input != "stdin" || body.EnvVars["A"] != "B" || body.DeadlineUnixNano != deadline.UnixNano() {
+			t.Errorf("body=%+v err=%v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		flusher := w.(http.Flusher)
+		for _, fragment := range []string{
+			`{"executionID":"exec","sequence":1,"type":"std`,
+			`out","payload":"hello"}` + "\n" + `{"executionID":"exec","sequence":2,`,
+			`"type":"result","payload":"{\"exitCode\":0}"}` + "\n",
+		} {
+			_, _ = io.WriteString(w, fragment)
+			flusher.Flush()
+		}
+	})
+	executor := b.(Executor)
+	var events []Event
+	err := executor.Exec(context.Background(), "remote/id", Execution{ID: "exec", Command: "echo hi", Input: []byte("stdin"), EnvVars: map[string]string{"A": "B"}, Deadline: deadline}, func(event Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil || len(events) != 2 || events[0].Payload != "hello" || events[1].Type != "result" {
+		t.Fatalf("events=%+v err=%v", events, err)
 	}
-	if err := executor.Exec(context.Background(), "a", Execution{}, func(Event) error { return nil }); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("exec %v", err)
+}
+
+func TestHTTPExecutionRejectsInterruptedAndOversizedStreams(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing terminal", body: `{"executionID":"exec","sequence":1,"type":"stdout","payload":"partial"}` + "\n"},
+		{name: "sequence gap", body: `{"executionID":"exec","sequence":2,"type":"result"}` + "\n"},
+		{name: "oversized event", body: `{"executionID":"exec","sequence":1,"type":"stdout","payload":"` + strings.Repeat("x", 256<<10) + `"}` + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := httpBackend(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				_, _ = io.WriteString(w, tc.body)
+			})
+			err := b.(Executor).Exec(context.Background(), "sandbox", Execution{ID: "exec", Command: "command", Deadline: time.Now().Add(time.Minute)}, func(Event) error { return nil })
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestHTTPExecutionCancellationReachesRuntime(t *testing.T) {
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	b := httpBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+		close(cancelled)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- b.(Executor).Exec(ctx, "sandbox", Execution{ID: "exec", Command: "command", Deadline: time.Now().Add(time.Minute)}, func(Event) error { return nil })
+	}()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v", err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("runtime request was not cancelled")
 	}
 }
 func TestRegistryLoadsNamespacedSecret(t *testing.T) {
