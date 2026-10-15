@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/your-org/your-repo/security/advisories/new
+    about: 请私下报告沙箱逃逸、凭据泄露或宿主机受侵问题。
+  - name: 设计讨论
+    url: https://github.com/your-org/your-repo/discussions
+    about: 提交可实施的 Issue 前，先讨论范围较大的想法。

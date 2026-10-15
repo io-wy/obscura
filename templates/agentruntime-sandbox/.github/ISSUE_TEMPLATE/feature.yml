@@ -1,0 +1,49 @@
+name: 功能建议
+description: 提出可实施的 AgentRuntime 改进
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: 受影响组件
+      options:
+        - API / 控制面
+        - 沙箱生命周期
+        - Guest Runtime
+        - 快照 / 模板
+        - 存储 / 卷
+        - 网络 / 出站
+        - CLI / 工具
+        - CI / 部署
+        - 文档
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与使用场景
+      description: 请先说明用户、负载、规模和当前限制，再提出实现建议。
+    validations:
+      required: true
+  - type: textarea
+    id: desired
+    attributes:
+      label: 期望行为与验收标准
+      placeholder: |
+        - 前提……
+        - 当……
+        - 应当……
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: 兼容性与运维
+      value: |
+        API / 配置变化：
+        快照 / 存储格式变化：
+        新增宿主机要求：
+        升级和回滚：
+    validations:
+      required: true

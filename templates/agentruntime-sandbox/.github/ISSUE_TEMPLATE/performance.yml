@@ -1,0 +1,25 @@
+name: 性能回退
+description: 报告经过测量且可复现的性能回退
+labels: ["performance", "needs-triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 回退摘要
+      description: 请包含指标、基线、当前结果和用户影响。
+    validations:
+      required: true
+  - type: textarea
+    id: workload
+    attributes:
+      label: 宿主机与负载
+      description: 请包含 CPU、内存、存储、镜像或快照大小、缓存状态和重复次数。
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: 基准命令与原始结果
+      render: shell
+    validations:
+      required: true

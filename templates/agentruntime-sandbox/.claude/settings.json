@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(git push --force*)",
+      "Bash(curl * | bash*)",
+      "Bash(docker run --privileged*)"
+    ]
+  }
+}

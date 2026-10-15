@@ -1,0 +1,6 @@
+# Replace these placeholders with real teams before enabling required reviews.
+* @your-org/runtime-maintainers
+/.agent/ @your-org/runtime-maintainers
+/.claude/ @your-org/runtime-maintainers
+/.github/ @your-org/release-engineering
+/scripts/sandbox/ @your-org/runtime-maintainers

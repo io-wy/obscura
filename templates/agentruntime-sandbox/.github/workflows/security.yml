@@ -1,0 +1,25 @@
+name: Security checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for obvious secret material
+        run: |
+          set -euo pipefail
+          if git grep -nEI '(AKIA[0-9A-Z]{16}|-----BEGIN (RSA|OPENSSH|EC) PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9_]{20,})' -- . ':!*.md'; then
+            echo 'Potential secret found; remove it before merging.' >&2
+            exit 1
+          fi
+      - name: Validate shell scripts
+        run: find scripts -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n

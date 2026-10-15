@@ -1,0 +1,55 @@
+name: 缺陷报告
+description: 报告可复现的 Runtime 或沙箱问题
+labels: ["bug", "needs-triage"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: 受影响组件
+      options:
+        - API / 控制面
+        - 沙箱生命周期
+        - Guest Runtime
+        - 快照 / 模板
+        - 存储 / 卷
+        - 网络 / 出站
+        - CLI / 工具
+        - CI / 部署
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 请提供版本、commit、操作系统、内核、架构，以及 KVM 和设备支持情况。
+      value: |
+        - 版本或 commit：
+        - 操作系统与内核：
+        - 架构：
+        - 物理机、VM 或云环境：
+        - KVM / 所需设备：
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 请提供准确的命令或 API 请求，并移除凭据。
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与日志
+      description: 请包含第一条错误；如有可能，附上关联 ID。
+      render: text
+    validations:
+      required: true

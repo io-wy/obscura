@@ -1,0 +1,25 @@
+name: Sandbox CI setup
+description: Prepare isolated state and optionally verify KVM for sandbox tests.
+inputs:
+  require_kvm:
+    description: Fail when /dev/kvm is not available.
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Configure isolated paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$GITHUB_WORKSPACE/.runtime/state" "$GITHUB_WORKSPACE/.runtime/deps" "$GITHUB_WORKSPACE/.runtime/logs"
+        echo "SANDBOX_STATE_DIR=$GITHUB_WORKSPACE/.runtime/state" >> "$GITHUB_ENV"
+        echo "SANDBOX_DEPS_DIR=$GITHUB_WORKSPACE/.runtime/deps" >> "$GITHUB_ENV"
+        echo "SANDBOX_LOG_DIR=$GITHUB_WORKSPACE/.runtime/logs" >> "$GITHUB_ENV"
+    - name: Check KVM when requested
+      if: ${{ inputs.require_kvm == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -e /dev/kvm || { echo '/dev/kvm is required for this run' >&2; exit 1; }
+        test -r /dev/kvm && test -w /dev/kvm || { echo '/dev/kvm is not readable and writable' >&2; exit 1; }
