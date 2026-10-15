@@ -72,9 +72,10 @@ func setup(t *testing.T) (*Reconciler, *fakeBackend, ctrl.Request) {
 	if err := api.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	sbx := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "test", UID: "e45e68b9-7172-49cd-af43-d4d870095bef", Generation: 1, CreationTimestamp: metav1.NewTime(time.Now())}, Spec: api.SandboxSpec{RuntimeRef: "native", TemplateRef: "dev", TimeoutSeconds: 300, Network: api.NetworkPolicy{}}}
+	sbx := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "test", UID: "e45e68b9-7172-49cd-af43-d4d870095bef", Generation: 1, CreationTimestamp: metav1.NewTime(time.Now()), Labels: map[string]string{"sandbox.obscura.dev/tenant": "tenant"}}, Spec: api.SandboxSpec{RuntimeRef: "native", TemplateRef: "dev", TimeoutSeconds: 300, Network: api.NetworkPolicy{}}}
 	rt := &api.SandboxRuntime{ObjectMeta: metav1.ObjectMeta{Name: "native", Namespace: "test", UID: "runtime-uid"}, Spec: api.SandboxRuntimeSpec{Config: api.RuntimeConfig{Type: "obscura", Endpoint: "unix:///run/node.sock"}, Templates: map[string]string{"dev": "base@sha256:test"}}}
-	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&api.Sandbox{}).WithObjects(sbx, rt).Build()
+	tenant := &api.SandboxTenant{ObjectMeta: metav1.ObjectMeta{Name: "tenant"}, Spec: api.SandboxTenantSpec{Namespace: "test", Quota: api.TenantQuota{MaxSandboxes: 1, MaxTimeoutSeconds: 3600, MaxConcurrentExecutions: 1, MaxConcurrentPTY: 1}}, Status: api.SandboxTenantStatus{Allocations: []api.TenantAllocation{{SandboxID: sbx.Name, SpecHash: SpecHash(sbx.Spec), TimeoutSeconds: sbx.Spec.TimeoutSeconds, ReservedAt: metav1.Now()}}}}
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&api.Sandbox{}, &api.SandboxTenant{}).WithObjects(sbx, rt, tenant).Build()
 	b := &fakeBackend{}
 	r := &Reconciler{Client: c, Reader: c, Factory: &fakeFactory{b: b}}
 	return r, b, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(sbx)}
@@ -94,6 +95,15 @@ func sandbox(t *testing.T, r *Reconciler, q ctrl.Request) *api.Sandbox {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func tenant(t *testing.T, r *Reconciler) *api.SandboxTenant {
+	t.Helper()
+	result := &api.SandboxTenant{}
+	if err := r.Get(context.Background(), client.ObjectKey{Name: "tenant"}, result); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func TestRepeatedReconcileAndControllerRestartUsePersistedBinding(t *testing.T) {
@@ -197,10 +207,30 @@ func TestDeletePreconditionKeepsFinalizerAndSignalsOperator(t *testing.T) {
 	}
 	reconcile(t, r, q, 1)
 	s := sandbox(t, r, q)
-	if len(s.Finalizers) == 0 || s.Status.Phase != "Terminating" || s.Status.Conditions[0].Reason != "CleanupBlocked" {
+	if len(s.Finalizers) == 0 || s.Status.Phase != "Terminating" || s.Status.Conditions[0].Reason != "CleanupBlocked" || len(tenant(t, r).Status.Allocations) != 1 {
 		t.Fatalf("unsafe cleanup state: %+v", s)
 	}
 }
+
+func TestMissingTenantBlocksFinalizerAfterBackendCleanup(t *testing.T) {
+	r, b, q := setup(t)
+	reconcile(t, r, q, 5)
+	owner := tenant(t, r)
+	if err := r.Delete(context.Background(), owner); err != nil {
+		t.Fatal(err)
+	}
+	s := sandbox(t, r, q)
+	if err := r.Delete(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	b.deleteDone = true
+	reconcile(t, r, q, 1)
+	s = sandbox(t, r, q)
+	if len(s.Finalizers) == 0 || s.Status.Phase != "Terminating" || s.Status.Conditions[0].Reason != "QuotaReleaseBlocked" {
+		t.Fatalf("missing tenant released finalizer: %+v", s)
+	}
+}
+
 func TestDeletionRetriesUntilResourcesConfirmedAbsent(t *testing.T) {
 	r, b, q := setup(t)
 	reconcile(t, r, q, 5)
@@ -209,13 +239,16 @@ func TestDeletionRetriesUntilResourcesConfirmedAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcile(t, r, q, 2)
-	if len(sandbox(t, r, q).Finalizers) == 0 || b.deletes != 2 {
+	if len(sandbox(t, r, q).Finalizers) == 0 || b.deletes != 2 || len(tenant(t, r).Status.Allocations) != 1 {
 		t.Fatal("cleanup prematurely completed")
 	}
 	b.deleteDone = true
 	reconcile(t, r, q, 1)
 	if err := r.Get(context.Background(), q.NamespacedName, &api.Sandbox{}); err == nil {
 		t.Fatal("finalizer not released")
+	}
+	if len(tenant(t, r).Status.Allocations) != 0 {
+		t.Fatal("quota allocation retained after confirmed cleanup")
 	}
 }
 func TestRuntimeConfigEditCannotRedirectExistingSandbox(t *testing.T) {

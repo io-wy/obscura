@@ -8,6 +8,7 @@ import (
 	"time"
 
 	api "github.com/obscura/agentruntime/control/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,11 +41,15 @@ func TestAPIValidationAndControllerRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	tenant := &api.SandboxTenant{ObjectMeta: metav1.ObjectMeta{Name: "default"}, Spec: api.SandboxTenantSpec{Namespace: "default", Credentials: []corev1.SecretKeySelector{{LocalObjectReference: corev1.LocalObjectReference{Name: "key"}, Key: "api-key"}}, Quota: api.TenantQuota{MaxSandboxes: 1, MaxTimeoutSeconds: 3600, MaxConcurrentExecutions: 1, MaxConcurrentPTY: 1}}}
+	if err := c.Create(ctx, tenant); err != nil {
+		t.Fatal(err)
+	}
 	rt := &api.SandboxRuntime{ObjectMeta: metav1.ObjectMeta{Name: "native", Namespace: "default"}, Spec: api.SandboxRuntimeSpec{Config: api.RuntimeConfig{Type: "native", Endpoint: "unix:///run/node.sock"}, Templates: map[string]string{"dev": "base"}}}
 	if err := c.Create(ctx, rt); err != nil {
 		t.Fatal(err)
 	}
-	s := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "default"}, Spec: api.SandboxSpec{RuntimeRef: "native", TemplateRef: "dev", Resources: &api.ResourceSpec{VCPUs: 1, MemoryMiB: 512, DiskMiB: 2048}, Network: api.NetworkPolicy{}, TimeoutSeconds: 300}}
+	s := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "default", Labels: map[string]string{TenantLabel: tenant.Name}}, Spec: api.SandboxSpec{RuntimeRef: "native", TemplateRef: "dev", Resources: &api.ResourceSpec{VCPUs: 1, MemoryMiB: 512, DiskMiB: 2048}, Network: api.NetworkPolicy{}, TimeoutSeconds: 300}}
 	invalid := s.DeepCopy()
 	invalid.Name = "invalid"
 	invalid.Spec.TimeoutSeconds = -1
@@ -52,6 +57,13 @@ func TestAPIValidationAndControllerRecovery(t *testing.T) {
 		t.Fatalf("invalid lifetime accepted: %v", err)
 	}
 	if err := c.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKey{Name: tenant.Name}, tenant); err != nil {
+		t.Fatal(err)
+	}
+	tenant.Status.Allocations = []api.TenantAllocation{{SandboxID: s.Name, SpecHash: SpecHash(s.Spec), Resources: s.Spec.Resources.DeepCopy(), TimeoutSeconds: s.Spec.TimeoutSeconds, ReservedAt: metav1.Now()}}
+	if err := c.Status().Update(ctx, tenant); err != nil {
 		t.Fatal(err)
 	}
 	changed := s.DeepCopy()

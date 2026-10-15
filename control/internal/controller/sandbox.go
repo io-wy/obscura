@@ -12,6 +12,7 @@ import (
 
 	api "github.com/obscura/agentruntime/control/api/v1alpha1"
 	"github.com/obscura/agentruntime/control/internal/backend"
+	"github.com/obscura/agentruntime/control/internal/quota"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -20,6 +21,7 @@ import (
 )
 
 const Finalizer = "sandbox.obscura.dev/runtime-cleanup"
+const TenantLabel = "sandbox.obscura.dev/tenant"
 
 type Reconciler struct {
 	client.Client
@@ -225,9 +227,47 @@ func (r *Reconciler) cleanup(ctx context.Context, s *api.Sandbox) (ctrl.Result, 
 			}
 		}
 	}
+	if err := r.releaseAllocation(ctx, s); err != nil {
+		return r.report(ctx, s, "Terminating", metav1.ConditionUnknown, "QuotaReleaseBlocked", "Tenant quota allocation could not be released", true)
+	}
 	before := s.DeepCopy()
 	controllerutil.RemoveFinalizer(s, Finalizer)
 	return ctrl.Result{}, r.Patch(ctx, s, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+}
+
+func (r *Reconciler) releaseAllocation(ctx context.Context, s *api.Sandbox) error {
+	reader := r.Reader
+	if reader == nil {
+		reader = r.Client
+	}
+	tenantName := s.Labels[TenantLabel]
+	if tenantName == "" {
+		tenants := &api.SandboxTenantList{}
+		if err := reader.List(ctx, tenants); err != nil {
+			return err
+		}
+		for i := range tenants.Items {
+			if tenants.Items[i].Spec.Namespace != s.Namespace || !tenants.Items[i].DeletionTimestamp.IsZero() {
+				continue
+			}
+			if tenantName != "" {
+				return fmt.Errorf("sandbox namespace has ambiguous tenant ownership")
+			}
+			tenantName = tenants.Items[i].Name
+		}
+		if tenantName == "" {
+			return fmt.Errorf("sandbox has no tenant owner")
+		}
+	}
+	tenant := &api.SandboxTenant{}
+	if err := reader.Get(ctx, client.ObjectKey{Name: tenantName}, tenant); err != nil {
+		return err
+	}
+	if tenant.Spec.Namespace != s.Namespace {
+		return fmt.Errorf("sandbox tenant does not own namespace")
+	}
+	manager := &quota.Manager{Client: r.Client, Reader: reader}
+	return manager.ReleaseSandbox(ctx, tenantName, s.Name)
 }
 
 func (r *Reconciler) condition(s *api.Sandbox, phase string, value metav1.ConditionStatus, reason, message string) {
