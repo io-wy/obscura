@@ -1,0 +1,161 @@
+# Kubernetes Controller + Runtime
+
+macOS 可直接运行 `make dev-up` / `make test-controlplane`，使用独立的真实 API Server
+与模拟 Runtime 联调 Controller/Gateway，无需 Docker/KVM。环境边界、故障注入和
+完整命令见 [测试指南](testing.md)。下文自研 Runtime 部署指真实 Linux/KVM 后端。
+
+Obscura 使用 `sandbox.obscura.dev/v1alpha1` 的两个资源。`Sandbox` 表达不可变的
+启动规格、有效期和期望存在的实例；`SandboxRuntime` 配置某个后端的入口、模板
+映射和 Secret 引用。沙箱规格不可修改；需要改变规格时创建新的 Sandbox。
+
+控制器首次处理资源时，先写 finalizer，再持久化绑定和创建意图，最后调用后端。
+绑定固定 Runtime 配置、模板、Sandbox UID 和规格摘要，所以修改或删除原来的
+Runtime 配置不会把已有实例的操作重定向到其他后端。凭据值不写入 status。
+有效期从 CR 创建时间开始计算，Pending 时间也计入有效期。
+
+Gateway 每个实例限制在一个命名空间并使用一个 API key。当前不是完整的用户
+认证平台；同一命名空间内持有该 key 的用户能操作其中的沙箱。CR status、绑定
+配置和 Runtime 对象由管理员维护，不能给普通租户随意写权限。删除后端配置前
+应先清理实例；原 Secret 必须保留到清理结束。
+
+## 自研 Runtime 本地开发
+
+按照根 README 启动 Linux/KVM Rust 节点，在同一个 Linux 节点运行控制器和
+Gateway，使用同一个 Kubernetes 配置和 UDS。Runtime 不需要 Kubernetes 凭据。
+本版使用 Kubernetes 1.35 系列客户端和 envtest 目标；需要访问集群的权限。
+
+```sh
+make proto-generate manifests build-control
+kubectl apply -k deploy/crds
+kubectl create namespace obscura-system
+cd control
+go run ./cmd/controller --namespace=obscura-system
+```
+
+另一个终端启动 Gateway，`OBSCURA_API_KEY` 使用你设置的凭据：
+
+```sh
+cd control
+go run ./cmd/gateway --namespace=obscura-system --listen=127.0.0.1:9000
+```
+
+应用 Runtime 和示例沙箱，观察状态：
+
+```sh
+kubectl apply -f deploy/examples/obscura.yaml
+kubectl -n obscura-system get sandboxes -w
+kubectl -n obscura-system describe sandbox demo
+kubectl -n obscura-system delete sandbox demo
+```
+
+UDS 权限是 0600，控制器与 Gateway 需要可访问该 socket 的身份。当前不能在
+一台机器上通过 UDS 操作另一台机器的 Rust 节点。
+
+## 集群部署
+
+在仓库根目录构建并发布控制面镜像；使用实际 registry/tag 替换清单中的
+`obscura-control:dev`。镜像包含 controller 和 gateway 两个可执行文件。
+
+```sh
+docker build -f control/Dockerfile -t obscura-control:dev .
+kubectl apply -f deploy/base/namespace.yaml
+kubectl -n obscura-system create secret generic obscura-gateway-key \
+  --from-literal=api-key="$OBSCURA_API_KEY"
+```
+
+HTTP 后端使用 `kubectl apply -k deploy`。后端服务通过自身 Helm / manifest
+独立安装；Obscura 不重复部署或修改后端的调度器、DaemonSet 和宿主机资源。
+Backend 类型选择 agentenv / cubesandbox / e2b，入口填写集群 Service URL。
+
+自研 UDS 后端使用 `deploy/overlays/native`：先在一个 Linux 节点启动 Rust
+节点，并且**仅给这一个节点**设置 `obscura.dev/runtime-node=true` 标签。
+overlay 将 Controller / Gateway 固定到该节点并挂载 `/run/obscura`，以 UID 0
+连接 0600 socket；它们不自行管理 Firecracker 或宿主网络。此拓扑不支持跨节点
+高可用。Runtime 数据库和镜像需要持久化在节点上。
+
+生产接入还需要分别验收宿主机的 Linux/KVM、Firecracker、TAP/nftables、
+`ip_forward`、guest 镜像和本地持久文件系统。当前清单没有部署 Rust 节点，
+也没有提供跨节点的安全传输、调度或数据库故障转移。节点数据库升级、备份和
+恢复必须遵守 [Controller 契约](../runtime/CONTROLLER_CONTRACT.md)；隔离身份
+的自动解除尚未设计成可执行流程。HTTP 后端还必须针对选定的 AgentENV、
+CubeSandbox 或 E2B 版本验证发现/分页、创建和删除契约，不能凭类型名称认定兼容。
+
+```sh
+kubectl label node YOUR_LINUX_NODE obscura.dev/runtime-node=true
+kubectl apply -k deploy/overlays/native
+kubectl apply -f deploy/examples/obscura.yaml
+```
+
+## Gateway API
+
+所有业务请求需要 `X-API-Key`；`GET /healthz` 为公开探针。`/v1` 是 Obscura
+自己的 API，返回异步生命周期状态。可通过 `kubectl port-forward` 访问集群服务。
+Gateway Service 当前提供集群内 HTTP；不要直接暴露到公网。需要外部访问时，
+应由受信任的入口提供 TLS、访问控制和限流。当前单命名空间共享 key 不提供
+独立用户身份、细粒度权限或租户配额。
+
+```sh
+kubectl -n obscura-system port-forward svc/obscura-gateway 9000:9000
+curl -X POST http://127.0.0.1:9000/v1/sandboxes \
+  -H "X-API-Key: $OBSCURA_API_KEY" \
+  -H 'Idempotency-Key: demo-request-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"runtimeRef":"obscura","templateRef":"dev","resources":{"vcpus":1,"memoryMiB":512,"diskMiB":2048},"network":{"allowEgress":false},"timeoutSeconds":300}'
+```
+
+- `POST /v1/sandboxes`：持久化 CR，返回 202、sandboxID 和 Location。
+- `GET /v1/sandboxes/{sandboxID}`：返回生命周期状态和 Conditions。
+- `DELETE /v1/sandboxes/{sandboxID}`：请求异步删除，finalizer 等待后端清理确认。
+- `POST /v1/sandboxes/{sandboxID}/execute`：Ready 时向自研 Runtime 执行命令，
+  请求包含 command、input、envVars、timeoutSeconds；返回 NDJSON 流。
+
+同一 Idempotency-Key 与相同规格重复请求会返回同一个 CR；不同规格返回 409。
+CR 被彻底删除后再使用同一 key 会创建新 UID，当前 API 没有永久请求去重账本。
+命令有效期不超过沙箱有效期，执行内容、环境变量和输出不写入 CR。
+
+## AgentENV / CubeSandbox 接入范围
+
+当前通用 HTTP 生命周期适配器需要后端提供：
+
+- `GET /v2/sandboxes` 的元数据过滤、running/paused 查询及分页。
+- `POST /sandboxes` 接受 templateID、timeout 和 metadata。
+- 实例查询和删除接口返回可确认的状态。
+
+类型名称表示选择该 HTTP 配置，不保证每个上游版本都符合这些接口。
+接入前固定上游 commit / tag，并验证上述契约；当前尚未对真实部署做烟测。
+可以从 `deploy/examples/agentenv.yaml` 开始，CubeSandbox 配置使用
+`type: cubesandbox` 和它的 CubeAPI Service URL。
+
+HTTP 后端省略 resources，规格由上游模板决定。当前只接受明确允许出口网络
+的配置，不支持默认拒绝或域名白名单；这些请求会失败而不会悄悄放宽策略。
+HTTP 的 envd 执行、文件、PTY 和端口代理尚未实现，因此通过 Gateway 执行返回
+501。完整 E2B SDK 兼容仍需要另外实现平台响应、envd 和认证路由。
+
+HTTP 创建只授权一次 POST；重试用 `obscura_uid` / `spec_hash` 元数据找回实例。
+创建结果不确定且查询不到实例时标记 CreationUnknown，禁止自动重新 POST。
+删除也会保持 finalizer，直到能确认或人工审计清理。请求未发出前的崩溃也可能
+进入这一保守状态，这保证不重建，但不保证所有中断都自动恢复可用。
+
+## 故障与验证
+
+Runtime 短暂断联保留绑定，标记 Unknown。实例丢失、Failed 或 Deleted 时不
+自动替换有状态实例。自研 Runtime 重启会隔离无法确认归属的旧 VM，相关清理
+需要节点隔离和人工审计，详见 `runtime/CONTROLLER_CONTRACT.md`。
+
+```sh
+make test
+make test-envtest
+cd control && go test -race ./internal/backend ./internal/controller ./internal/kubegateway
+kubectl kustomize deploy
+kubectl kustomize deploy/overlays/native
+```
+
+envtest 启动真实 API Server / etcd，验证 CRD 结构、CEL 不可变规则、状态写入
+失败恢复和 finalizer；首次运行需能下载 envtest 二进制，也可通过
+`KUBEBUILDER_ASSETS` 指向预装的文件。单元测试不启动真实 Firecracker。
+Linux/KVM 和上游真实部署的端到端测试仍需在对应环境完成。
+
+2026-10-15 后续已在 Apple Silicon macOS 下载并运行 Kubernetes 1.35.0 envtest；
+`make test` 与 `make test-controlplane` 通过，覆盖原有 API/CEL/恢复验证与新增
+manager/Gateway/gRPC 模拟 Runtime 联调。之后又通过 Compose/Linux 容器测试和
+Kind 镜像/部署/smoke；完整记录见测试指南。Linux/KVM 和真实上游后端烟测仍未验证。
