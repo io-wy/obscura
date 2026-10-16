@@ -3,6 +3,9 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root/control"
+# CI 上 API Server 的优雅退出可能超过 envtest 默认的 20 秒。
+# 等待期限仍然有界；真正退出失败仍由测试报错，不吞掉 Stop 错误。
+export KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT="${KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT:-90s}"
 envtest_version="${ENVTEST_K8S_VERSION:-1.35.0}"
 envtest_tool='sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20260305142021-f9589b9f2b9d'
 if [[ -z "${KUBEBUILDER_ASSETS:-}" ]]; then
@@ -28,6 +31,7 @@ for envtest_binary in kube-apiserver etcd kubectl; do
   fi
 done
 echo "Using envtest assets: $KUBEBUILDER_ASSETS" >&2
+echo "Envtest stop timeout: $KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT" >&2
 if [[ $# -gt 0 ]]; then
   exec "$@"
 fi

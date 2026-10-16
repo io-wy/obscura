@@ -29,6 +29,10 @@ Linux/KVM 主机、内核、Firecracker 一致。当前 native UDS 只能访问�
 
 ## 测试分层与入口
 
+每次推送 `dev` 前完整执行 `make ci`。这是 GitHub Actions 与本地共用的入口，
+包含 `make test-mac test-race test-manifests build-control`、版本和 diff 检查；
+需要 kubectl，不能通过跳过清单验证代替完整检查。推送后还需核对对应提交的远端结果。
+
 | 层次 | 命令 | 覆盖与前提 |
 | --- | --- | --- |
 | L1 快速逻辑 | `make test` | Go、Rust 单测、guest framing/构建、Git 工具；无需 Kubernetes/Docker/KVM |
@@ -42,6 +46,11 @@ Linux/KVM 主机、内核、Firecracker 一致。当前 native UDS 只能访问�
 普通 `make test` 不悄悄跳过测试，也不自动下载/启动集群。L2 缺少资产或启动失败会明确
 失败；第一次准备需要网络，后续复用本机缓存。CI 在 macOS 上运行 L1/L2 和 Go race。
 Docker/Kind 的 L3 需显式启动，避免无意更改本机 Docker 状态。
+
+envtest 默认只等待进程退出 20 秒，2026-10-16 的远端 CI 在 API Server 清理阶段
+两次触发该超时。`scripts/envtest-assets.sh` 现在默认设置
+`KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=90s`，允许有界的优雅退出，并打印实际值。
+可显式覆盖该环境变量；退出仍失败时保留测试错误，不忽略 Stop 失败。
 
 ## 首次准备
 
@@ -273,6 +282,12 @@ port-forward。可用 `OBSCURA_KIND_PORT` 更换本地端口。Kind 中的执行
 状态提升为已准入。
 
 ## 验证记录
+
+2026-10-16，本轮 CI 清理问题的受控回归在 Apple Silicon macOS 上使用同一份
+Kubernetes 1.35.0 envtest 资产，为 API Server 设置 25 秒的退出延迟：显式配置
+20 秒等待时在 20.022 秒报清理超时；使用脚本默认的 90 秒等待时在 26.099 秒
+正常退出，Stop 无错误。该检查证明超过旧等待期限的优雅退出可以完成，不代表
+所有超时均可忽略；完整本地和远端 CI 仍按本轮最终代码单独运行。
 
 2026-10-16，将两个功能分支汇入 `dev` 后，在 Apple Silicon macOS 上执行
 `make test-mac test-race test-manifests`、`make build-control` 均通过。

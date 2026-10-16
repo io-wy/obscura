@@ -4,6 +4,12 @@ export PATH := $(CURDIR)/.tools/bin:$(PATH)
 
 test: test-go test-rust protocol-check guest-test test-git-workflow
 
+.PHONY: ci
+# 本地推送与 GitHub Actions 共用同一个验证入口。
+ci: test-mac test-race test-manifests build-control
+	python3 scripts/git-workflow.py check-version
+	git diff --check
+
 test-go: proto-generate
 	cd control && go test ./...
 

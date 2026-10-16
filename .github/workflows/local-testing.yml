@@ -32,12 +32,10 @@ jobs:
           python-version: '3.12'
       - name: Install native tooling
         run: |
-          brew install protobuf
+          brew install protobuf kubernetes-cli
           rustup toolchain install stable --profile minimal
           rustup default stable
       - name: Prepare local dependencies and envtest
         run: make dev-bootstrap
-      - name: Native unit and control-plane integration tests
-        run: make test-mac
-      - name: Go race checks
-        run: make test-race
+      - name: 本地与远端统一 CI 检查
+        run: make ci

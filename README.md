@@ -3,6 +3,7 @@
 一款为 AgentRuntime 提供的“暗箱”。
 
 协作规范、分支 / commit / tag 约定及命令用法见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Agent 协作规则见 [AGENT.md](AGENT.md)，实际交付边界见 [当前工作进度](docs/progress.md)。
 `make git-help` 查看终端命令；`.claude/commands/` 提供 `/branch`、`/commit-push`、
 `/pr` 和 `/release-tag`。
 
@@ -20,18 +21,22 @@ RBAC；`docker compose run --build --rm control-tests` 在 Linux 容器中运行
 ## Kubernetes 控制面
 
 新增 `Sandbox` / `SandboxRuntime` CRD、controller-runtime 控制器和独立 Gateway。
+集群级 `SandboxTenant` 管理租户凭据、命名空间及资源/会话配额。
 现有 Rust Firecracker 服务就是 Obscura 的自研 Runtime，通过后端适配层与
 AgentENV / CubeSandbox 等实现并列接入。创建、状态观察、有效期和删除由控制器
 管理；命令执行流经 Gateway 直达 Runtime。
 
 - `control/cmd/controller`：CR 生命周期、持久化绑定、finalizer 和超时回收。
-- `control/cmd/gateway`：创建 CR 的异步 API、自研 Runtime 执行流。
-- `control/internal/backend`：自研 gRPC 和 E2B 风格 HTTP 生命周期适配器。
-- `deploy/`：CRD、命名空间 RBAC、Deployment、Service 和示例。
+- `control/cmd/gateway`：租户鉴权、异步生命周期 API、执行流、文件和 PTY 路由。
+- `control/internal/backend`：自研 gRPC、共享 HTTP transport 及 provider profile/codec。
+- `deploy/`：CRD、共享服务 RBAC、Deployment、Service 和租户示例。
 
 这是第一阶段实现：自研 Runtime 为单节点 UDS 接入；HTTP 适配器要求后端提供
-E2B v2 元数据查询能力，尚未经真实 AgentENV / CubeSandbox 部署验收。HTTP 后端
-执行、文件和 PTY 尚未接入，Gateway 的 `/v1` API 不宣称完整 E2B SDK 兼容。
+E2B v2 元数据查询能力，尚未经真实 AgentENV / CubeSandbox 部署验收。
+共享 HTTP adapter 的执行、文件和 PTY 已有契约测试；AgentENV v0.2.3 已有专用
+execute/files codec，仍未开放 Registry。OpenSandbox/CubeSandbox 的专用数据面
+尚未实现；端口代理只有 adapter 边界，尚无 Gateway 路由。
+Gateway 的 `/v1` API 不宣称完整 E2B SDK 兼容。
 详见 [Kubernetes 使用说明](docs/kubernetes.md) 和
 [Runtime 接入契约](runtime/CONTROLLER_CONTRACT.md)。
 
