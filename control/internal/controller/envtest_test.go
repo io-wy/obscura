@@ -45,6 +45,16 @@ func TestAPIValidationAndControllerRecovery(t *testing.T) {
 	if err := c.Create(ctx, tenant); err != nil {
 		t.Fatal(err)
 	}
+	changedTenant := tenant.DeepCopy()
+	changedTenant.Spec.Namespace = "other"
+	if err := c.Update(ctx, changedTenant); !apierrors.IsInvalid(err) {
+		t.Fatalf("immutable tenant namespace changed: %v", err)
+	}
+	changedTenant = tenant.DeepCopy()
+	changedTenant.Spec.Quota.MaxSandboxes = 2
+	if err := c.Update(ctx, changedTenant); err != nil {
+		t.Fatalf("mutable tenant quota rejected: %v", err)
+	}
 	rt := &api.SandboxRuntime{ObjectMeta: metav1.ObjectMeta{Name: "native", Namespace: "default"}, Spec: api.SandboxRuntimeSpec{Config: api.RuntimeConfig{Type: "native", Endpoint: "unix:///run/node.sock"}, Templates: map[string]string{"dev": "base"}}}
 	if err := c.Create(ctx, rt); err != nil {
 		t.Fatal(err)

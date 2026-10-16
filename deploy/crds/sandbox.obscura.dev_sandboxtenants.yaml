@@ -77,6 +77,9 @@ spec:
                 maxLength: 63
                 minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: tenant namespace is immutable
+                  rule: self == oldSelf
               quota:
                 properties:
                   maxConcurrentExecutions:
@@ -275,9 +278,6 @@ spec:
         required:
         - spec
         type: object
-        x-kubernetes-validations:
-        - message: tenant namespace is immutable
-          rule: self.namespace == oldSelf.namespace
     served: true
     storage: true
     subresources:

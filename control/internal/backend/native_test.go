@@ -36,6 +36,10 @@ func (s *fakeNative) Health(context.Context, *pb.HealthRequest) (*pb.HealthRespo
 	return &pb.HealthResponse{ProtocolVersion: version, Capabilities: caps}, nil
 }
 func (s *fakeNative) CreateSandbox(_ context.Context, r *pb.CreateSandboxRequest) (*pb.CreateSandboxResponse, error) {
+	// Match the Rust node's launch-policy validation: TTL belongs to Controller.
+	if r.GetResources().GetMaxRuntimeNanos() != 0 {
+		return nil, status.Error(codes.Unimplemented, "sandbox maximum lifetime is not enforced yet")
+	}
 	s.createID = r.SandboxId
 	s.hash = r.SpecHash
 	return &pb.CreateSandboxResponse{Sandbox: &pb.Sandbox{SandboxId: r.SandboxId, State: pb.SandboxState_SANDBOX_STATE_READY}}, nil
@@ -96,6 +100,14 @@ func nativeBackend(t *testing.T, s *fakeNative) executableBackend {
 }
 func nativeRequest() Request {
 	return Request{ID: "11111111-1111-4111-8111-111111111111", SpecHash: "hash", Template: "test", Resources: Resources{VCPUs: 1, MemoryMiB: 128, DiskMiB: 128}, TimeoutSeconds: 60}
+}
+func TestNativeEnsureKeepsLifetimeInController(t *testing.T) {
+	b := nativeBackend(t, &fakeNative{capability: true})
+	r := nativeRequest()
+	got, err := b.Ensure(context.Background(), r)
+	if err != nil || got.Handle != r.ID {
+		t.Fatalf("controller-managed TTL must not request node lifetime enforcement: got %v, error %v", got, err)
+	}
 }
 func TestNativeEnsureStableIDAndHealthCapability(t *testing.T) {
 	s := &fakeNative{capability: true}
@@ -160,10 +172,15 @@ func TestNativeExecutionTruncatedStreamIsNotSuccess(t *testing.T) {
 }
 func TestNativeRejectAllowHosts(t *testing.T) {
 	b := nativeBackend(t, &fakeNative{})
-	r := nativeRequest()
-	r.Network.AllowHosts = []string{"example.com"}
-	if err := b.Validate(r); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("got %v", err)
+	for _, enforcement := range []string{"", "rejectUnsupported", "auditOnly", "enforced"} {
+		t.Run(enforcement, func(t *testing.T) {
+			r := nativeRequest()
+			r.Network.AllowHosts = []string{"example.com"}
+			r.Network.Enforcement = enforcement
+			if err := b.Validate(r); !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("unsupported allowlist must not be silently dropped: got %v", err)
+			}
+		})
 	}
 }
 

@@ -3,3 +3,4 @@ kind: Kustomization
 resources:
   - sandbox.obscura.dev_sandboxes.yaml
   - sandbox.obscura.dev_sandboxruntimes.yaml
+  - sandbox.obscura.dev_sandboxtenants.yaml

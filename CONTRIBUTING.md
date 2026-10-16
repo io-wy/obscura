@@ -1,15 +1,16 @@
 # 协作与发布规范
 
-采用 GitHub Flow：`main` 保存通过检查的代码，开发使用短分支，通过 PR squash merge。
+`dev` 汇总功能分支并执行集成验证，`main` 保存通过检查的发布基线。
+开发使用短分支，通过 PR 合入 `dev`，验证后再提升到 `main`。
 当前是原型阶段；版本号表示代码版本，实际运行限制以 README 和 Runtime 契约为准。
 
 ## 分支
 
 - 命名：`<type>/<slug>`，例如 `feat/runtime-adapter`、`fix/sandbox-timeout`。
 - type 使用下表中的提交类型；slug 使用小写英文、数字和连字符。
-- 一个分支聚焦一件事，合并后删除；暂不引入长期 `develop` 或 `release/*` 分支。
-- 开始新工作前更新 `main`：`git switch main && git pull --ff-only`。
-  创建分支命令默认从当前 HEAD 开始，保留当前未提交内容；也可显式传 `--base origin/main`。
+- 一个功能分支聚焦一件事，确认不再使用后删除；`dev` 是长期集成分支。
+- 开始新工作前更新 `dev`：`git switch dev && git pull --ff-only`。
+  创建分支命令默认从当前 HEAD 开始，保留当前未提交内容；也可显式传 `--base origin/dev`。
 - 不直接向 `main` 推送开发提交，不 force push 共享分支；本工具没有强推选项。
 
 ## Commit 与 PR 标题
@@ -75,7 +76,8 @@ python3 scripts/git-workflow.py pr \
 `git diff --cached --check`，不会自动运行产品测试；提交前按变更范围执行下面的验证。
 推送只针对当前分支并设置 upstream，不附带 tag。
 
-`pr` 要求工作区干净、HEAD 已推送且相对最新远端 main 有提交，显式使用 origin 仓库和当前分支。
+`pr` 脚本仍默认以 main 为目标；合入 dev 时使用 `gh pr create --base dev`。
+该脚本要求工作区干净、HEAD 已推送且相对最新远端 main 有提交，显式使用 origin 仓库和当前分支。
 默认创建 draft，`--ready` 可直接发起 review；已有同仓库、同 head/base 的 open PR 则返回其 URL，
 不覆盖标题或正文。PR 命令不会提交或推送代码。原始 gh 的 `pr create --dry-run` 仍可能推送，
 本流程不使用它做无副作用预览。

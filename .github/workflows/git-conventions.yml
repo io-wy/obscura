@@ -2,10 +2,10 @@ name: Git conventions
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     types: [opened, edited, synchronize, reopened, ready_for_review]
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
   workflow_dispatch:
 
@@ -31,8 +31,8 @@ jobs:
         run: |
           python3 scripts/git-workflow.py check-message "$PR_TITLE"
           python3 scripts/git-workflow.py check-branch "$PR_BRANCH"
-      - name: Validate main commit title
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Validate integration commit title
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
         run: python3 scripts/git-workflow.py check-message "$(git log -1 --format=%s)"
       - name: Validate package versions
         run: python3 scripts/git-workflow.py check-version

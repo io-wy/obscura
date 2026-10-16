@@ -12,7 +12,9 @@ profile 必须先通过 [Runtime Contract v1](../../../docs/plans/2026-10-16-run
 ## 原生 Rust Runtime
 
 端点必须是绝对 Unix socket 路径或 `unix:///absolute/path`。CPU、内存、磁盘、
-超时和是否允许出站流量会映射到现有 Protobuf API。Runtime 尚不强制执行主机名
+是否允许出站流量会映射到现有 Protobuf API。沙箱 TTL 由 Controller 到期删除，
+不设置节点尚未支持的 `max_runtime_nanos`；Controller 不可用时没有节点独立到期保证。
+Runtime 尚不强制执行主机名
 白名单，因此此类请求会被拒绝。每次 Ensure 都会检查 Health 是否声明
 `idempotent-create-v1` 且协议版本为 `agentruntime.v1`，然后把 Sandbox UID 作为稳定的 `sandbox_id`，连同
 Controller 计算的不可变 `spec_hash` 一起发送。

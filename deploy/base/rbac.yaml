@@ -4,7 +4,7 @@ metadata:
   name: obscura-controller
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: obscura-controller
 rules:
@@ -17,9 +17,34 @@ rules:
   - apiGroups: [sandbox.obscura.dev]
     resources: [sandboxruntimes]
     verbs: [get, list, watch]
+  - apiGroups: [sandbox.obscura.dev]
+    resources: [sandboxtenants]
+    verbs: [get, list, watch]
+  - apiGroups: [sandbox.obscura.dev]
+    resources: [sandboxtenants/status]
+    verbs: [get, update, patch]
   - apiGroups: ['']
     resources: [secrets]
-    verbs: [get]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: obscura-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: obscura-controller
+subjects:
+  - kind: ServiceAccount
+    name: obscura-controller
+    namespace: obscura-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: obscura-controller-leader-election
+rules:
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     verbs: [get, list, watch, create, update, patch, delete]
@@ -27,11 +52,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: obscura-controller
+  name: obscura-controller-leader-election
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: obscura-controller
+  name: obscura-controller-leader-election
 subjects:
   - kind: ServiceAccount
     name: obscura-controller
@@ -42,25 +67,32 @@ metadata:
   name: obscura-gateway
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: obscura-gateway
 rules:
   - apiGroups: [sandbox.obscura.dev]
     resources: [sandboxes]
     verbs: [get, create, delete]
+  - apiGroups: [sandbox.obscura.dev]
+    resources: [sandboxtenants]
+    verbs: [get, list]
+  - apiGroups: [sandbox.obscura.dev]
+    resources: [sandboxtenants/status]
+    verbs: [get, patch]
   - apiGroups: ['']
     resources: [secrets]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: obscura-gateway
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: obscura-gateway
 subjects:
   - kind: ServiceAccount
     name: obscura-gateway
+    namespace: obscura-system

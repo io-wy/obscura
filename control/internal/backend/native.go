@@ -54,9 +54,7 @@ func (b *nativeBackendClient) Validate(r Request) error {
 		return fmt.Errorf("native timeout is outside supported range")
 	}
 	if len(r.Network.AllowHosts) > 0 {
-		if r.Network.Enforcement != "auditOnly" {
-			return fmt.Errorf("%w: native allowHosts enforcement is not implemented", ErrUnsupported)
-		}
+		return fmt.Errorf("%w: native allowHosts enforcement is not implemented", ErrUnsupported)
 	}
 	if r.CredentialPolicy.PolicyRef != "" && !r.CredentialPolicy.Brokered {
 		return fmt.Errorf("%w: credential policy must use broker", ErrInvalid)
@@ -129,7 +127,8 @@ func (b *nativeBackendClient) Ensure(ctx context.Context, r Request) (Observatio
 	if !supported {
 		return Observation{}, fmt.Errorf("%w: native runtime must advertise idempotent-create-v1", ErrUnsupported)
 	}
-	result, err := b.rpc.CreateSandbox(ctx, &pb.CreateSandboxRequest{RequestId: r.ID, SandboxId: r.ID, SpecHash: r.SpecHash, TemplateRef: r.Template, Resources: &pb.ResourceSpec{Vcpus: r.Resources.VCPUs, MemoryMib: r.Resources.MemoryMiB, DiskMib: r.Resources.DiskMiB, MaxRuntimeNanos: r.TimeoutSeconds * int64(time.Second)}, NetworkPolicy: &pb.NetworkPolicy{AllowEgress: r.Network.AllowEgress, Enforcement: networkEnforcement(r.Network.Enforcement)}, VersionPin: &pb.VersionPin{RuntimeVersion: r.VersionPin.RuntimeVersion, ImageDigest: r.VersionPin.ImageDigest, DependencyLock: r.VersionPin.DependencyLock, DatasetVersion: r.VersionPin.DatasetVersion, ScorerVersion: r.VersionPin.ScorerVersion}, Workspace: &pb.WorkspaceSpec{Mode: workspaceMode(r.Workspace.Mode), Reference: r.Workspace.Reference}, CredentialPolicy: &pb.CredentialPolicy{PolicyRef: r.CredentialPolicy.PolicyRef, Brokered: r.CredentialPolicy.Brokered}})
+	// Controller reconciles the sandbox TTL; node lifetime enforcement is unsupported.
+	result, err := b.rpc.CreateSandbox(ctx, &pb.CreateSandboxRequest{RequestId: r.ID, SandboxId: r.ID, SpecHash: r.SpecHash, TemplateRef: r.Template, Resources: &pb.ResourceSpec{Vcpus: r.Resources.VCPUs, MemoryMib: r.Resources.MemoryMiB, DiskMib: r.Resources.DiskMiB}, NetworkPolicy: &pb.NetworkPolicy{AllowEgress: r.Network.AllowEgress, Enforcement: networkEnforcement(r.Network.Enforcement)}, VersionPin: &pb.VersionPin{RuntimeVersion: r.VersionPin.RuntimeVersion, ImageDigest: r.VersionPin.ImageDigest, DependencyLock: r.VersionPin.DependencyLock, DatasetVersion: r.VersionPin.DatasetVersion, ScorerVersion: r.VersionPin.ScorerVersion}, Workspace: &pb.WorkspaceSpec{Mode: workspaceMode(r.Workspace.Mode), Reference: r.Workspace.Reference}, CredentialPolicy: &pb.CredentialPolicy{PolicyRef: r.CredentialPolicy.PolicyRef, Brokered: r.CredentialPolicy.Brokered}})
 	if err != nil {
 		return Observation{}, nativeError(err)
 	}

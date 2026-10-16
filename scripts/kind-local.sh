@@ -46,12 +46,15 @@ case "$action" in
     kubectl_test -n obscura-system create secret generic obscura-gateway-key \
       --from-file="api-key=$key_file" --dry-run=client -o yaml | kubectl_test apply -f -
     kubectl_test apply -k deploy/crds
+    kubectl_test wait --for=condition=Established crd/sandboxtenants.sandbox.obscura.dev --timeout=60s
     kubectl_test apply -k deploy/overlays/kind
+    kubectl_test apply -f deploy/base/tenant.yaml
     kubectl_test apply -f deploy/examples/kind.yaml
     kubectl_test -n obscura-system rollout restart deployment/obscura-devruntime deployment/obscura-controller deployment/obscura-gateway
     kubectl_test -n obscura-system rollout status deployment/obscura-devruntime --timeout=120s
     kubectl_test -n obscura-system rollout status deployment/obscura-controller --timeout=120s
     kubectl_test -n obscura-system rollout status deployment/obscura-gateway --timeout=120s
+    kubectl_test wait --for=condition=Ready sandboxtenant/obscura-default --timeout=120s
     echo "Kind stack ready. Run: make kind-smoke"
     echo "kubectl --kubeconfig '$kubeconfig' --context '$context' -n obscura-system get pods"
     ;;
@@ -73,6 +76,7 @@ case "$action" in
   status)
     [[ -f "$kubeconfig" ]] || { echo 'Run make kind-up first' >&2; exit 1; }
     kubectl_test -n obscura-system get deployment,pods,svc,sandboxruntimes,sandboxes
+    kubectl_test get sandboxtenants
     ;;
   down)
     [[ -f "$kubeconfig" ]] || { echo 'This project has no Kind kubeconfig; refusing to delete a cluster' >&2; exit 1; }

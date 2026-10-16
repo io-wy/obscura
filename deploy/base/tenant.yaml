@@ -1,0 +1,22 @@
+# Apply separately after installing the CRDs and creating obscura-gateway-key.
+# This example owns the namespace used by the bundled Runtime examples.
+apiVersion: sandbox.obscura.dev/v1alpha1
+kind: SandboxTenant
+metadata:
+  name: obscura-default
+spec:
+  namespace: obscura-system
+  credentials:
+    - name: obscura-gateway-key
+      key: api-key
+  quota:
+    maxSandboxes: 10
+    maxVcpusPerSandbox: 8
+    maxMemoryMiBPerSandbox: 16384
+    maxDiskMiBPerSandbox: 204800
+    maxTotalVcpus: 16
+    maxTotalMemoryMiB: 32768
+    maxTotalDiskMiB: 409600
+    maxTimeoutSeconds: 3600
+    maxConcurrentExecutions: 8
+    maxConcurrentPty: 4

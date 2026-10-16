@@ -44,6 +44,7 @@ type SandboxTenantSpec struct {
 	// Namespace is exclusively owned by this tenant.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="tenant namespace is immutable"
 	Namespace string `json:"namespace"`
 	// Credentials reference Secrets in the Gateway authentication namespace.
 	// +kubebuilder:validation:MinItems=1
@@ -84,7 +85,6 @@ type SandboxTenantStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="self.namespace == oldSelf.namespace",message="tenant namespace is immutable"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster,shortName=sbt

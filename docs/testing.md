@@ -274,6 +274,16 @@ port-forward。可用 `OBSCURA_KIND_PORT` 更换本地端口。Kind 中的执行
 
 ## 验证记录
 
+2026-10-16，将两个功能分支汇入 `dev` 后，在 Apple Silicon macOS 上执行
+`make test-mac test-race test-manifests`、`make build-control` 均通过。
+集成修复包括 native adapter 不请求节点未实现的最大生命周期限制（TTL 仍由
+Controller 删除）、所有非空域名白名单明确拒绝、Tenant namespace 字段级 CEL
+不可变规则，以及 Tenant CRD、RBAC、凭据与 Kind 启动配置。回归覆盖 Rust 节点的
+生命周期拒绝规则、真实 API Server 上 Tenant namespace 不可变而 quota 可更新、
+三套部署渲染与权限和 Tenant 示例 schema。`dev` 已加入 CI 触发分支。
+本机 Docker daemon 未启动，未验证实际 Kind 部署/RBAC 授权；Linux/KVM 和
+AgentENV 实机验收仍待测试机完成。
+
 2026-10-16，在 Apple Silicon macOS 上：`make test-go protocol-check` 和
 `cd control && go test -race ./internal/backend -count=1 -timeout=90s` 通过。
 AgentENV v0.2.3 的 HTTP 协议模拟覆盖 Connect framing、启动后发送 stdin、输入输出
