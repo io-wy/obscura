@@ -8,6 +8,7 @@ service DataPlane {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+  rpc ResetSandbox(ResetSandboxRequest) returns (ResetSandboxResponse);
   rpc Execute(ExecuteRequest) returns (stream AgentEvent);
   rpc Health(HealthRequest) returns (HealthResponse);
 }
@@ -21,6 +22,9 @@ message CreateSandboxRequest {
   string sandbox_id = 5;
   // Immutable caller specification hash; required when sandbox_id is set.
   string spec_hash = 6;
+  VersionPin version_pin = 7;
+  WorkspaceSpec workspace = 8;
+  CredentialPolicy credential_policy = 9;
 }
 
 message CreateSandboxResponse {
@@ -41,6 +45,48 @@ message DeleteSandboxRequest {
 }
 
 message DeleteSandboxResponse {}
+
+message ResetSandboxRequest {
+  string request_id = 1;
+  string sandbox_id = 2;
+  ResetMode mode = 3;
+}
+
+message ResetSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+enum ResetMode {
+  RESET_MODE_UNSPECIFIED = 0;
+  RESET_MODE_CLEAN = 1;
+  RESET_MODE_CHECKPOINT = 2;
+  RESET_MODE_TEMPLATE = 3;
+}
+
+message VersionPin {
+  string runtime_version = 1;
+  string image_digest = 2;
+  string dependency_lock = 3;
+  string dataset_version = 4;
+  string scorer_version = 5;
+}
+
+message WorkspaceSpec {
+  WorkspaceMode mode = 1;
+  string reference = 2;
+}
+
+enum WorkspaceMode {
+  WORKSPACE_MODE_UNSPECIFIED = 0;
+  WORKSPACE_MODE_EPHEMERAL = 1;
+  WORKSPACE_MODE_PERSISTENT = 2;
+  WORKSPACE_MODE_SNAPSHOT = 3;
+}
+
+message CredentialPolicy {
+  string policy_ref = 1;
+  bool brokered = 2;
+}
 
 message ExecuteRequest {
   string request_id = 1;
@@ -102,6 +148,14 @@ message ResourceSpec {
 message NetworkPolicy {
   bool allow_egress = 1;
   repeated string allow_hosts = 2;
+  NetworkEnforcement enforcement = 3;
+}
+
+enum NetworkEnforcement {
+  NETWORK_ENFORCEMENT_UNSPECIFIED = 0;
+  NETWORK_ENFORCEMENT_REJECT_UNSUPPORTED = 1;
+  NETWORK_ENFORCEMENT_AUDIT_ONLY = 2;
+  NETWORK_ENFORCEMENT_ENFORCED = 3;
 }
 
 message HealthRequest {}

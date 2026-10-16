@@ -68,15 +68,26 @@ type Resources struct {
 type NetworkPolicy struct {
 	AllowEgress bool     `json:"allowEgress"`
 	AllowHosts  []string `json:"allowHosts,omitempty"`
+	Enforcement string   `json:"enforcement,omitempty"`
+}
+
+type VersionPin struct{ RuntimeVersion, ImageDigest, DependencyLock, DatasetVersion, ScorerVersion string }
+type Workspace struct{ Mode, Reference string }
+type CredentialPolicy struct {
+	PolicyRef string
+	Brokered  bool
 }
 
 type Request struct {
-	ID             string
-	SpecHash       string
-	Template       string
-	Resources      Resources
-	Network        NetworkPolicy
-	TimeoutSeconds int64
+	ID               string
+	SpecHash         string
+	Template         string
+	Resources        Resources
+	Network          NetworkPolicy
+	TimeoutSeconds   int64
+	VersionPin       VersionPin
+	Workspace        Workspace
+	CredentialPolicy CredentialPolicy
 	// AllowCreate is true only in the reconcile that durably records creation intent.
 	// Idempotent backends can also ensure on subsequent reconciles. Others must
 	// discover an existing instance or return ErrAmbiguous.
@@ -84,8 +95,9 @@ type Request struct {
 }
 
 type Observation struct {
-	Handle string
-	State  State
+	Handle       string
+	State        State
+	Capabilities map[string]bool
 }
 
 type Execution struct {

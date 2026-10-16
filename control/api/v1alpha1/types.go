@@ -112,8 +112,11 @@ type SandboxSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	TemplateRef string `json:"templateRef"`
 	// Omit resources for providers whose templates fix the machine size.
-	Resources *ResourceSpec `json:"resources,omitempty"`
-	Network   NetworkPolicy `json:"network"`
+	Resources        *ResourceSpec    `json:"resources,omitempty"`
+	Network          NetworkPolicy    `json:"network"`
+	VersionPin       VersionPin       `json:"versionPin,omitempty"`
+	Workspace        WorkspaceSpec    `json:"workspace,omitempty"`
+	CredentialPolicy CredentialPolicy `json:"credentialPolicy,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=86400
 	TimeoutSeconds int64 `json:"timeoutSeconds"`
@@ -133,6 +136,27 @@ type NetworkPolicy struct {
 	// +kubebuilder:validation:MaxItems=128
 	// +kubebuilder:validation:items:MaxLength=253
 	AllowHosts []string `json:"allowHosts,omitempty"`
+	// +kubebuilder:validation:Enum=rejectUnsupported;auditOnly;enforced
+	Enforcement string `json:"enforcement,omitempty"`
+}
+
+type VersionPin struct {
+	RuntimeVersion string `json:"runtimeVersion,omitempty"`
+	ImageDigest    string `json:"imageDigest,omitempty"`
+	DependencyLock string `json:"dependencyLock,omitempty"`
+	DatasetVersion string `json:"datasetVersion,omitempty"`
+	ScorerVersion  string `json:"scorerVersion,omitempty"`
+}
+
+type WorkspaceSpec struct {
+	// +kubebuilder:validation:Enum=ephemeral;persistent;snapshot
+	Mode      string `json:"mode,omitempty"`
+	Reference string `json:"reference,omitempty"`
+}
+
+type CredentialPolicy struct {
+	PolicyRef string `json:"policyRef,omitempty"`
+	Brokered  bool   `json:"brokered,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="has(self.endpoint) || has(self.controlEndpoint)",message="endpoint or controlEndpoint is required"

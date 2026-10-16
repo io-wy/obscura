@@ -44,7 +44,9 @@ func SpecHash(s api.SandboxSpec) string {
 
 func Request(s *api.Sandbox) backend.Request {
 	b := s.Status.Binding
-	r := backend.Request{ID: b.ID, SpecHash: b.SpecHash, Template: b.Template, Network: backend.NetworkPolicy{AllowEgress: s.Spec.Network.AllowEgress, AllowHosts: s.Spec.Network.AllowHosts}, TimeoutSeconds: s.Spec.TimeoutSeconds}
+	r := backend.Request{ID: b.ID, SpecHash: b.SpecHash, Template: b.Template, Network: backend.NetworkPolicy{AllowEgress: s.Spec.Network.AllowEgress, AllowHosts: s.Spec.Network.AllowHosts, Enforcement: s.Spec.Network.Enforcement}, TimeoutSeconds: s.Spec.TimeoutSeconds,
+		VersionPin: backend.VersionPin{RuntimeVersion: s.Spec.VersionPin.RuntimeVersion, ImageDigest: s.Spec.VersionPin.ImageDigest, DependencyLock: s.Spec.VersionPin.DependencyLock, DatasetVersion: s.Spec.VersionPin.DatasetVersion, ScorerVersion: s.Spec.VersionPin.ScorerVersion},
+		Workspace:  backend.Workspace{Mode: s.Spec.Workspace.Mode, Reference: s.Spec.Workspace.Reference}, CredentialPolicy: backend.CredentialPolicy{PolicyRef: s.Spec.CredentialPolicy.PolicyRef, Brokered: s.Spec.CredentialPolicy.Brokered}}
 	if v := s.Spec.Resources; v != nil {
 		r.Resources = backend.Resources{VCPUs: uint32(v.VCPUs), MemoryMiB: uint32(v.MemoryMiB), DiskMiB: uint64(v.DiskMiB)}
 	}

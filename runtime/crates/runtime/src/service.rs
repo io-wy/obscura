@@ -5,8 +5,9 @@ use crate::rpc::data_plane_server::DataPlane;
 use crate::rpc::{
     AgentEvent, CreateSandboxRequest, CreateSandboxResponse, DeleteSandboxRequest,
     DeleteSandboxResponse, ExecuteRequest, GetSandboxRequest, GetSandboxResponse, HealthRequest,
-    HealthResponse, Sandbox, SandboxState,
+    HealthResponse, ResetSandboxRequest, ResetSandboxResponse, Sandbox, SandboxState,
 };
+use sha2::Digest;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
@@ -51,6 +52,15 @@ impl RuntimeService {
 
 #[tonic::async_trait]
 impl DataPlane for RuntimeService {
+    async fn reset_sandbox(
+        &self,
+        _request: Request<ResetSandboxRequest>,
+    ) -> Result<Response<ResetSandboxResponse>, Status> {
+        Err(Status::unimplemented(
+            "reset is not implemented by this node",
+        ))
+    }
+
     async fn create_sandbox(
         &self,
         request: Request<CreateSandboxRequest>,
@@ -71,6 +81,7 @@ impl DataPlane for RuntimeService {
                 "spec_hash is required with sandbox_id",
             ));
         }
+        let policy_bytes = prost::Message::encode_to_vec(&request);
         let resources = request
             .resources
             .ok_or_else(|| Status::invalid_argument("resources are required"))?;
@@ -83,9 +94,11 @@ impl DataPlane for RuntimeService {
                 "domain allowlists are not supported yet; refusing to silently allow egress",
             ));
         }
-        let bound_spec_hash =
-            serde_json::to_string(&(request.spec_hash, resources.max_runtime_nanos))
-                .map_err(|error| Status::internal(error.to_string()))?;
+        let bound_spec_hash = format!(
+            "{}:{:x}",
+            request.spec_hash,
+            sha2::Sha256::digest(policy_bytes)
+        );
         let orchestrator = Arc::clone(&self.orchestrator);
         let template_ref = request.template_ref;
         let allow_egress = request

@@ -49,6 +49,13 @@ spec:
             type: object
           spec:
             properties:
+              credentialPolicy:
+                properties:
+                  brokered:
+                    type: boolean
+                  policyRef:
+                    type: string
+                type: object
               network:
                 properties:
                   allowEgress:
@@ -59,6 +66,12 @@ spec:
                       type: string
                     maxItems: 128
                     type: array
+                  enforcement:
+                    enum:
+                    - rejectUnsupported
+                    - auditOnly
+                    - enforced
+                    type: string
                 required:
                 - allowEgress
                 type: object
@@ -96,6 +109,30 @@ spec:
                 maximum: 86400
                 minimum: 1
                 type: integer
+              versionPin:
+                properties:
+                  datasetVersion:
+                    type: string
+                  dependencyLock:
+                    type: string
+                  imageDigest:
+                    type: string
+                  runtimeVersion:
+                    type: string
+                  scorerVersion:
+                    type: string
+                type: object
+              workspace:
+                properties:
+                  mode:
+                    enum:
+                    - ephemeral
+                    - persistent
+                    - snapshot
+                    type: string
+                  reference:
+                    type: string
+                type: object
             required:
             - network
             - runtimeRef

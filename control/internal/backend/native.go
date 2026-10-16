@@ -54,7 +54,12 @@ func (b *nativeBackendClient) Validate(r Request) error {
 		return fmt.Errorf("native timeout is outside supported range")
 	}
 	if len(r.Network.AllowHosts) > 0 {
-		return fmt.Errorf("%w: native allowHosts enforcement is not implemented", ErrUnsupported)
+		if r.Network.Enforcement != "auditOnly" {
+			return fmt.Errorf("%w: native allowHosts enforcement is not implemented", ErrUnsupported)
+		}
+	}
+	if r.CredentialPolicy.PolicyRef != "" && !r.CredentialPolicy.Brokered {
+		return fmt.Errorf("%w: credential policy must use broker", ErrInvalid)
 	}
 	return nil
 }
@@ -124,7 +129,7 @@ func (b *nativeBackendClient) Ensure(ctx context.Context, r Request) (Observatio
 	if !supported {
 		return Observation{}, fmt.Errorf("%w: native runtime must advertise idempotent-create-v1", ErrUnsupported)
 	}
-	result, err := b.rpc.CreateSandbox(ctx, &pb.CreateSandboxRequest{RequestId: r.ID, SandboxId: r.ID, SpecHash: r.SpecHash, TemplateRef: r.Template, Resources: &pb.ResourceSpec{Vcpus: r.Resources.VCPUs, MemoryMib: r.Resources.MemoryMiB, DiskMib: r.Resources.DiskMiB, MaxRuntimeNanos: r.TimeoutSeconds * int64(time.Second)}, NetworkPolicy: &pb.NetworkPolicy{AllowEgress: r.Network.AllowEgress}})
+	result, err := b.rpc.CreateSandbox(ctx, &pb.CreateSandboxRequest{RequestId: r.ID, SandboxId: r.ID, SpecHash: r.SpecHash, TemplateRef: r.Template, Resources: &pb.ResourceSpec{Vcpus: r.Resources.VCPUs, MemoryMib: r.Resources.MemoryMiB, DiskMib: r.Resources.DiskMiB, MaxRuntimeNanos: r.TimeoutSeconds * int64(time.Second)}, NetworkPolicy: &pb.NetworkPolicy{AllowEgress: r.Network.AllowEgress, Enforcement: networkEnforcement(r.Network.Enforcement)}, VersionPin: &pb.VersionPin{RuntimeVersion: r.VersionPin.RuntimeVersion, ImageDigest: r.VersionPin.ImageDigest, DependencyLock: r.VersionPin.DependencyLock, DatasetVersion: r.VersionPin.DatasetVersion, ScorerVersion: r.VersionPin.ScorerVersion}, Workspace: &pb.WorkspaceSpec{Mode: workspaceMode(r.Workspace.Mode), Reference: r.Workspace.Reference}, CredentialPolicy: &pb.CredentialPolicy{PolicyRef: r.CredentialPolicy.PolicyRef, Brokered: r.CredentialPolicy.Brokered}})
 	if err != nil {
 		return Observation{}, nativeError(err)
 	}
@@ -132,6 +137,27 @@ func (b *nativeBackendClient) Ensure(ctx context.Context, r Request) (Observatio
 		return Observation{}, ErrConflict
 	}
 	return nativeObservation(result.GetSandbox())
+}
+
+func networkEnforcement(v string) pb.NetworkEnforcement {
+	switch v {
+	case "auditOnly":
+		return pb.NetworkEnforcement_NETWORK_ENFORCEMENT_AUDIT_ONLY
+	case "enforced":
+		return pb.NetworkEnforcement_NETWORK_ENFORCEMENT_ENFORCED
+	default:
+		return pb.NetworkEnforcement_NETWORK_ENFORCEMENT_REJECT_UNSUPPORTED
+	}
+}
+func workspaceMode(v string) pb.WorkspaceMode {
+	switch v {
+	case "persistent":
+		return pb.WorkspaceMode_WORKSPACE_MODE_PERSISTENT
+	case "snapshot":
+		return pb.WorkspaceMode_WORKSPACE_MODE_SNAPSHOT
+	default:
+		return pb.WorkspaceMode_WORKSPACE_MODE_EPHEMERAL
+	}
 }
 func (b *nativeBackendClient) Observe(ctx context.Context, id string) (Observation, error) {
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)

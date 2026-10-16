@@ -28,7 +28,9 @@ func (r *Registry) Open(ctx context.Context, namespace string, config Config) (B
 			return nil, fmt.Errorf("%w: native Unix sockets do not use API keys", ErrUnsupported)
 		}
 		return openNative(config.Endpoint)
-	case "e2b", "agentenv", "opensandbox", "cubesandbox":
+	case "agentenv", "opensandbox", "cubesandbox":
+		return nil, fmt.Errorf("%w: runtime provider is not admitted", ErrUnsupported)
+	case "e2b":
 		endpoint, err := url.Parse(config.LifecycleEndpoint())
 		if err != nil || endpoint == nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 			return nil, fmt.Errorf("%w: invalid HTTP runtime endpoint", ErrInvalid)
