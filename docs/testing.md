@@ -51,6 +51,10 @@ envtest 默认只等待进程退出 20 秒，2026-10-16 的远端 CI 在 API Ser
 两次触发该超时。`scripts/envtest-assets.sh` 现在默认设置
 `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=90s`，允许有界的优雅退出，并打印实际值。
 可显式覆盖该环境变量；退出仍失败时保留测试错误，不忽略 Stop 失败。
+后续远端诊断证明仅延长等待不能解决：runner 主机名超过 Lease 标签 63 字节
+上限，Kubernetes 1.35 的 API Server 身份 Lease 创建持续重试，关闭过程被重试锁
+阻塞。envtest/devlab 因此关闭 `APIServerIdentity`；这是独立单 API Server 的
+测试配置，不修改生产集群，也不验证 HA 身份发现。Actions 保留控制面输出供失败定位。
 
 ## 首次准备
 

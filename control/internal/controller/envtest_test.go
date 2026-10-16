@@ -23,6 +23,9 @@ import (
 func TestAPIValidationAndControllerRecovery(t *testing.T) {
 	useExisting := false
 	env := &envtest.Environment{UseExistingCluster: &useExisting, CRDDirectoryPaths: []string{"../../../deploy/crds"}, ErrorIfCRDPathMissing: true}
+	// 单 API Server 测试不验证 HA 身份发现。CI 长主机名会使其 Lease
+	// 标签非法，导致 Kubernetes 1.35 的 Lease 重试锁阻塞优雅退出。
+	env.ControlPlane.GetAPIServer().Configure().Set("feature-gates", "APIServerIdentity=false")
 	cfg, err := env.Start()
 	if err != nil {
 		t.Fatal(err)

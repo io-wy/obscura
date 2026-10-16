@@ -15,6 +15,7 @@
 - 检查失败时先定位并修复，再重新执行完整检查。不能用跳过测试、忽略退出码或旧结果代替本轮验证。
 - 本地通过后再推送；随后检查本次提交的远端 CI，区分本地通过、远端运行中和远端通过，不能提前声称完成。
 - envtest 默认允许每个控制面进程在 90 秒内退出，保留 Stop 错误；可用 `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT` 显式覆盖。发生超时要检查日志，不能直接忽略清理失败。
+- 单 API Server 的 envtest/devlab 关闭 `APIServerIdentity`，避免长主机名令 Kubernetes 1.35 的身份 Lease 标签非法并卡住退出。此设置不修改生产集群，也不代表验证了 API Server HA 身份发现。
 
 ## 实现与验收边界
 

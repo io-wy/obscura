@@ -84,6 +84,9 @@ func Start(ctx context.Context, opts Options) (_ *Lab, err error) {
 	// Never adopt the user's current cluster, even if envtest environment variables request it.
 	useExisting := false
 	l.env = &envtest.Environment{UseExistingCluster: &useExisting, CRDDirectoryPaths: []string{opts.CRDDirectory}, ErrorIfCRDPathMissing: true}
+	// 独立单节点联调不验证 HA 身份发现，避免长主机名导致身份 Lease
+	// 标签非法并阻塞 Kubernetes 1.35 的关闭流程；不修改生产 API Server。
+	l.env.ControlPlane.GetAPIServer().Configure().Set("feature-gates", "APIServerIdentity=false")
 	if l.config, err = l.env.Start(); err != nil {
 		return nil, fmt.Errorf("start envtest (run make dev-bootstrap or set KUBEBUILDER_ASSETS): %w", err)
 	}
