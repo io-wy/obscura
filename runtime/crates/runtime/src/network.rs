@@ -171,6 +171,33 @@ impl<R: CommandRunner> NetworkManager<R> {
         first_error.map_or(Ok(()), Err)
     }
 
+    /// The VM must already be stopped and its TAP removed. Scope deletion to
+    /// this guest; flushing the host table would disrupt unrelated tenants.
+    pub fn clear_connections(&mut self, guest: Ipv4Addr) -> Result<(), NetworkError> {
+        for selector in ["--orig-src", "--orig-dst"] {
+            let result = self.runner.run(
+                "conntrack",
+                &[
+                    "--delete".into(),
+                    "--family".into(),
+                    "ipv4".into(),
+                    selector.into(),
+                    guest.to_string(),
+                ],
+                None,
+            );
+            match result {
+                // conntrack-tools returns exit status 1 when no entries match.
+                Err(NetworkError::CommandFailed { program, stderr })
+                    if program == "conntrack"
+                        && stderr.lines().count() == 1
+                        && stderr.contains(": 0 flow entries have been deleted.") => {}
+                result => result?,
+            }
+        }
+        Ok(())
+    }
+
     fn cleanup_tap(&mut self, tap_device: &str) -> Result<(), NetworkError> {
         let args = vec![
             "link".into(),
@@ -358,5 +385,20 @@ mod tests {
                 guest_ipv4: Ipv4Addr::LOCALHOST,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn connections_are_deleted_only_for_the_guest_in_both_directions() {
+        let mut manager = NetworkManager::new(FakeRunner::default());
+        manager.clear_connections(spec(false).guest_ipv4).unwrap();
+        assert_eq!(manager.runner.calls.len(), 2);
+        for (index, selector) in ["--orig-src", "--orig-dst"].iter().enumerate() {
+            let call = &manager.runner.calls[index];
+            assert_eq!(call.0, "conntrack");
+            assert_eq!(
+                call.1,
+                ["--delete", "--family", "ipv4", selector, "172.30.0.2"]
+            );
+        }
     }
 }

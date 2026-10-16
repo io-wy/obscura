@@ -19,6 +19,8 @@ pub mod vmm;
 pub mod rpc {
     tonic::include_proto!("agentruntime.v1");
 }
+pub mod scoring;
 pub mod service;
+pub mod trajectory;
 
 pub const PROTOCOL_VERSION: &str = "agentruntime.v1";

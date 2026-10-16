@@ -23,4 +23,10 @@ impl WarmVmPool {
     pub fn len(&self) -> usize {
         self.ready.lock().expect("warm pool lock poisoned").len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.ready
+            .lock()
+            .expect("warm pool lock poisoned")
+            .is_empty()
+    }
 }

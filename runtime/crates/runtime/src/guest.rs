@@ -138,11 +138,18 @@ pub async fn start_execution(
     command: String,
     input: Vec<u8>,
     env_vars: std::collections::HashMap<String, String>,
-) -> anyhow::Result<UnixStream> {
+    deadline: tokio::time::Instant,
+) -> anyhow::Result<(UnixStream, u64)> {
     let mut stream = connect(path).await?;
     let ready = read_event(&mut stream).await?;
     if ready.sandbox_id != sandbox_id || ready.r#type != crate::rpc::GuestEventType::Ready as i32 {
         anyhow::bail!("guest identity or readiness mismatch");
+    }
+    if ready.sequence == 0 || ready.sequence == u64::MAX {
+        anyhow::bail!("invalid guest readiness sequence");
+    }
+    if tokio::time::Instant::now() >= deadline {
+        anyhow::bail!("execution expired before Run");
     }
     write_command(
         &mut stream,
@@ -157,5 +164,51 @@ pub async fn start_execution(
         },
     )
     .await?;
-    Ok(stream)
+    // READY participates in the guest's connection-local sequence. Preserve it
+    // so the caller can validate STARTED without renumbering public events.
+    Ok((stream, ready.sequence))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn readiness_after_deadline_never_sends_run() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let path = dir.path().join("guest");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            while stream.read_u8().await.unwrap() != b'\n' {}
+            stream.write_all(b"OK 5000\n").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let ready = GuestEvent {
+                protocol_version: crate::PROTOCOL_VERSION.into(),
+                sandbox_id: "sandbox".into(),
+                sequence: 1,
+                r#type: crate::rpc::GuestEventType::Ready as i32,
+                ..Default::default()
+            }
+            .encode_to_vec();
+            stream.write_u32(ready.len() as u32).await.unwrap();
+            stream.write_all(&ready).await.unwrap();
+            assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+        });
+        assert!(start_execution(
+            &path,
+            "sandbox",
+            "execution",
+            "echo secret".into(),
+            vec![],
+            Default::default(),
+            tokio::time::Instant::now() + Duration::from_millis(5)
+        )
+        .await
+        .is_err());
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }

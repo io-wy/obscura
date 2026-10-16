@@ -72,8 +72,10 @@ that sandbox between successful reset boundaries. Each lease has a monotonically
 increasing epoch. Execute, score, and trajectory events are associated with the
 sandbox ID, episode ID, lease epoch, execution ID, and environment revision.
 
-An old epoch cannot issue commands after reset. This prevents delayed requests
-or disconnected streams from mutating a reused sandbox.
+Internal work and active streams from an old epoch are fenced after reset.
+The frozen external Execute request has no epoch: a new request delayed until
+after reset cannot be attributed to the old caller. Upstream callers must order
+reset and new executions; this feature does not extend the protocol.
 
 ### Reset
 
@@ -180,7 +182,9 @@ exist.
 - Runtime restart never claims an old execution lease without reconciliation.
 - A full trajectory spool returns backpressure or fails the episode according
   to policy; it never silently drops required events.
-- Secrets, raw provider errors, and unbounded process output are not recorded.
+- Raw command, environment values, process I/O, and raw provider errors are not
+  recorded by the metadata spool. Callers must keep secrets out of identity
+  fields; hashing payloads does not provide anonymization.
 
 ## Delivery Phases
 
@@ -220,3 +224,37 @@ exist.
   sandbox or a quarantined sandbox, never an uncertain pooled sandbox.
 - Benchmarks report p50/p95/p99 cold start, warm acquire, reset, episodes per node,
   pool hit rate, quarantine rate, and estimated cost per 1,000 episodes.
+
+## Implemented slice and explicit deferrals (2026-10-16)
+
+The current slice implements durable reset/generation state, immutable measured
+launch profiles, Firecracker orchestration, generation-specific guest sockets,
+active-stream fencing, a bounded metadata spool, and host-side scoring value and
+capability boundaries. It uses the existing `Vmm` trait; a generic container
+isolation-driver interface is deferred until the containerd implementation.
+
+The spool deliberately stores typed metadata and payload digests, not replayable
+task contents. This narrows the trajectory goal for the first slice: raw-content
+capture, remote content-addressed storage, resource samples and policy event
+producers remain open. Lifecycle deletion uses SQLite as the final authority
+when a full spool prevents recording its optional audit event. Storage operations
+are synchronous on blocking workers; execution deadlines cannot interrupt stuck
+host I/O. An interrupted admission may leave a Started record without a terminal;
+it must not be treated as successful completion or scoring evidence.
+
+Scoring adapters record handoff/result digests; actual independent worker
+deployment, authentication, CAS verification, durable full score storage and
+cross-restart deduplication remain external obligations. Terminal evidence is
+specifically a HostExecution Terminal record. Only operation counters exist;
+latency, resource, reuse and quarantine metrics are deferred.
+
+The complete EnvironmentRevision canonicalizer is a library boundary. Service
+admission verifies supported runtime/image pins and rejects unsupported
+dependency/dataset/scorer verification, persistence, credential brokerage and
+maximum-lifetime requests. Legacy template aliases remain accepted and are
+measured; they do not constitute production manifest admission.
+
+All conformance evidence so far is local Rust/fake-driver/UDS testing on macOS.
+Linux/KVM/conntrack isolation, containerd/runsc admission, warm-pool reuse and
+real benchmarks are unverified; the full acceptance criteria above remain
+deployment gates, not claims that this first slice has met them.

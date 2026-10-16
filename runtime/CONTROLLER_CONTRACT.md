@@ -12,9 +12,11 @@
 在创建响应不确定时不能安全重试。
 
 节点保存实际模板、CPU、内存、磁盘、出站设置和调用方规格哈希的 SHA-256 指纹。
-gRPC 入口还把 `max_runtime_nanos` 纳入指纹。request ID 仅用于追踪，不是幂等键。
+gRPC 入口绑定完整创建策略（排除追踪 request ID）。create 的 request ID 仅用于
+追踪，不是幂等键；reset 的 request ID 则是持久化操作幂等键。
 域名白名单尚未实现，因此相关请求仍会被拒绝。运行时截止时间由 Controller 负责
-强制执行。
+强制执行；节点没有实现 sandbox 最大生命周期，对非零 `max_runtime_nanos`
+返回 Unimplemented，不能把它视为已生效的节点限制。
 
 SQLite 事务会在文件系统、网络或 VM 副作用发生之前预留身份、指纹和网络槽位。
 成功的重试返回原有 Ready、Running 或 Paused 沙箱及其实际状态。不可变规格不同
@@ -24,15 +26,16 @@ FailedPrecondition，绝不会静默再次启动。丢失响应后仍可用 GetS
 不能触发替代 VM。只要调用方仍可能重试这些 ID，就必须保留 Deleted 墓碑和指纹，
 不得回收。
 
-数据库 schema 版本保存在 `PRAGMA user_version`。当前版本为 1；启动时以单个事务
-把旧版 `network_slot UNIQUE` 约束迁移为部分唯一索引，外键校验失败会回滚迁移并
-拒绝启动。高于当前版本的数据库也会被拒绝，不能由旧版节点降级打开。网络槽位
+数据库 schema 版本保存在 `PRAGMA user_version`。当前版本为 2；v0→v1 的事务
+把旧版 `network_slot UNIQUE` 约束迁移为部分唯一索引，v1→v2 的另一事务增加
+launch profile、episode、reset intent 和 receipt 表。每步失败分别回滚；
+外键校验失败拒绝启动。高于当前版本的数据库被拒绝，不能由旧版节点降级打开。网络槽位
 范围是 1 到 16383，优先选最小空闲槽。只有 `Deleted` 且没有进程句柄的记录才
 释放槽位；`Failed`、Creating 和重启后隔离的身份继续占用。墓碑与指纹仍保留，
 槽位耗尽返回 gRPC `ResourceExhausted`，不会启动 VM。
 
 Health 在 `HealthResponse.capabilities`（字段 3）中声明
-`idempotent-create-v1`。依赖持久化创建语义的 Controller 应要求此能力，并在
+`idempotent-create-v1` 和 `reset-clean-v1`。依赖持久化创建语义的 Controller 应要求相应能力，并在
 超时和重启后保留选定的节点与 Runtime 绑定。
 
 ## 删除与观察
@@ -40,12 +43,39 @@ Health 在 `HealthResponse.capabilities`（字段 3）中声明
 不存在或已经 Deleted 的身份可以成功删除。对已知的托管沙箱，节点先持久化
 Failed，再停止 VM；随后持久化移除进程句柄，最后清理按身份确定的网络和磁盘资源。
 失败时保留记录以便重试。清理时允许 TAP 设备或 nftables 表已经不存在；其他错误
-会向上返回。同一守护进程中的 Creating 记录也能删除，包括 VM 已启动、Ready
+会向上返回；释放网络槽位前还必须按 guest IP 清除宿主机 conntrack，不能全表清空。
+同一守护进程中的 Creating 记录也能删除，包括 VM 已启动、Ready
 尚未提交的间隙。具体 provider 可以通过预留的 UUID 停止进程。
 
 报告原本 Ready、Running 或 Paused 的实例前，观察逻辑会检查守护进程拥有的子进程
 句柄。进程已退出或丢失时，状态变为 Failed。这能发现进程死亡，但不是持续的
 guest 健康探测。
+
+## Clean reset 与执行流
+
+只接受 CLEAN 和非空、最多 256 字节的 reset request ID；其余 reset 模式返回
+Unimplemented。通过镜像校验、成功持久化 intent 后才广播旧执行取消；内部 Resetting
+映射为现有外部 Creating，避免报告 Ready。原 VM 停止回收、网络/conntrack 与磁盘清理、
+新镜像副本校验和 guest Ready 成功后，事务提交新 episode/generation、Ready 和 receipt。
+同一 request ID 的重放只观察当前 sandbox，不再次清理或启动。不同 reset ID 表示新的
+操作；receipt 与墓碑必须保留到上游不再可能重试，当前没有自动回收策略。
+
+每个 generation 使用不同 guest socket；reset/delete 与 Run 启动互斥，已连接旧流
+接到取消后关闭。在客户端队列已满时，取消错误可能无法入队，流会有界关闭；不能将
+无终态 EOF 视为执行成功。原始 guest READY 占用序号，转发事件保留 guest 的实际
+序号；轨迹元数据有独立序列并保存原 guest 序号。
+
+Execute 的 execution ID 在启用轨迹的 node 上限定为 1–256 字节 ASCII graphic，
+同 episode 内不可重用，重复返回 AlreadyExists。启动前落盘命令/输入摘要；转发前
+落盘事件与终态。磁盘写满在启动前返回 ResourceExhausted；启动后记录失败停止转发，
+当前 episode 标记 Failed。同步存储 I/O 不受 RPC deadline 的硬中断保证；被取消的
+admission 可能留下一条无终态 Started，不能据此评分。
+
+冻结协议没有 Execute epoch，节点无法辨别 reset 后才到达的新请求来自旧调用方。
+上游必须对 reset 与新执行排序；这不是端到端 delayed-caller fencing 保证。
+
+工作区持久化、凭证代理、依赖/dataset/scorer 内容验证尚未接入，对相关字段请求
+明确拒绝。节点仅提供评分宿主库边界，不提供 scorer RPC 或独立 worker 部署。
 
 ## 重启隔离与运行限制
 

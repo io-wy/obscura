@@ -21,8 +21,7 @@ pub enum ImageError {
 }
 
 pub fn verify_file_digest(path: &Path, expected: &str) -> Result<(), ImageError> {
-    let bytes = std::fs::read(path).map_err(|_| ImageError::Missing(path.into()))?;
-    let actual = format!("sha256:{:x}", Sha256::digest(bytes));
+    let actual = file_digest(path)?;
     if actual != expected {
         return Err(ImageError::DigestMismatch {
             expected: expected.into(),
@@ -30,4 +29,17 @@ pub fn verify_file_digest(path: &Path, expected: &str) -> Result<(), ImageError>
         });
     }
     Ok(())
+}
+
+pub fn file_digest(path: &Path) -> Result<String, ImageError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|_| ImageError::Missing(path.into()))?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|_| ImageError::Missing(path.into()))?;
+        if count == 0 { break; }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("sha256:{:x}", hash.finalize()))
 }

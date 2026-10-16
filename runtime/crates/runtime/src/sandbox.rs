@@ -8,6 +8,7 @@ pub enum SandboxState {
     Running,
     Paused,
     Snapshotting,
+    Resetting,
     Deleted,
     Failed,
 }
@@ -41,23 +42,26 @@ impl Sandbox {
             ) | (
                 SandboxState::Ready,
                 SandboxState::Running
+                    | SandboxState::Resetting
                     | SandboxState::Paused
                     | SandboxState::Deleted
                     | SandboxState::Failed
             ) | (
                 SandboxState::Running,
                 SandboxState::Ready
+                    | SandboxState::Resetting
                     | SandboxState::Paused
                     | SandboxState::Snapshotting
                     | SandboxState::Deleted
                     | SandboxState::Failed
             ) | (
                 SandboxState::Paused,
-                SandboxState::Running | SandboxState::Deleted | SandboxState::Failed
+                SandboxState::Running | SandboxState::Resetting | SandboxState::Deleted | SandboxState::Failed
             ) | (
                 SandboxState::Snapshotting,
                 SandboxState::Paused | SandboxState::Ready | SandboxState::Failed
-            ) | (SandboxState::Failed, SandboxState::Deleted)
+            ) | (SandboxState::Resetting, SandboxState::Ready | SandboxState::Failed)
+                | (SandboxState::Failed, SandboxState::Deleted)
         );
         if !valid {
             return Err(LifecycleError::InvalidTransition {

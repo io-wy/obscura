@@ -55,6 +55,7 @@ impl FirecrackerProvider for FakeFirecracker {
             runtime_handle: format!("fake-{}", self.launched.len() + 1),
         };
         self.launched.push(handle.clone());
+        self.stopped.retain(|id| *id != spec.sandbox_id);
         Ok(handle)
     }
 

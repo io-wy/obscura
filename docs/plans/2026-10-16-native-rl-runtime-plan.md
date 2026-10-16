@@ -51,13 +51,13 @@
 - Modify: `runtime/crates/runtime/src/storage.rs`
 - Modify: `runtime/crates/runtime/src/sandbox.rs`
 
-- [ ] Add failing migration tests for the new launch/reset metadata while preserving v1 tombstones and quarantine records.
-- [ ] Add `Resetting` to the internal state machine without exposing a new protobuf enum.
-- [ ] Persist the immutable launch profile, environment revision, episode generation, and reset intent before side effects.
-- [ ] Add atomic storage methods to begin reset, complete reset, and quarantine a failed reset.
-- [ ] Test reopen behavior for interrupted reset and future-schema rejection.
-- [ ] Run storage and lifecycle tests, then the complete Rust test suite.
-- [ ] Commit only Runtime storage/state files.
+- [x] Add migration tests for new launch/reset metadata while preserving v1 tombstones and quarantine records.
+- [x] Add `Resetting` to the internal state machine without exposing a new protobuf enum.
+- [x] Persist the immutable launch profile, measured environment revision, episode generation, and reset intent before side effects.
+- [x] Add atomic storage methods to begin reset, complete reset, and fail a reset; reopened uncertain identities are quarantined.
+- [x] Test reopen behavior for interrupted reset and future-schema rejection.
+- [x] Run storage and lifecycle tests, then the complete Rust test suite.
+- [x] Include Runtime storage/state in the native implementation commit, after the shared protocol baseline.
 
 ### Task 4: Clean-reset orchestration
 
@@ -66,14 +66,14 @@
 - Modify: `runtime/crates/runtime/src/vmm.rs`
 - Modify: `runtime/crates/runtime/src/provider.rs`
 
-- [ ] Add a failing test proving writable disk content is replaced from the immutable base during clean reset.
-- [ ] Add tests for stop failure, network cleanup failure, relaunch failure, readiness failure, and final Ready persistence failure.
-- [ ] Add tests proving each failure leaves the sandbox non-ready and quarantined.
-- [ ] Refine the VMM boundary into an isolation-driver lifecycle without changing Firecracker behavior.
-- [ ] Implement clean reset as persisted intent, stop/reap, network and disk cleanup, fresh launch, readiness probe, generation increment, and Ready commit.
-- [ ] Reject checkpoint/template modes internally until their compatibility checks exist.
-- [ ] Run orchestrator tests, complete Rust tests, and `git diff --check`.
-- [ ] Commit the Runtime-only change.
+- [x] Test that writable disk content is replaced from the immutable base during clean reset.
+- [x] Test stop, network cleanup, conntrack, relaunch, readiness, and final Ready persistence failures.
+- [x] Test each failure leaves a non-ready identity with retained cleanup ownership; restart quarantines it.
+- [x] Retain the tested existing Vmm lifecycle; defer the generic isolation-driver refactor to Task 8.
+- [x] Implement persisted intent, stop/reap, TAP/nft/conntrack and disk cleanup, verified kernel/rootfs copies, fresh launch, readiness, generation increment, and Ready commit.
+- [x] Reject checkpoint/template modes until compatibility checks exist.
+- [x] Run orchestrator tests, complete Rust tests, and `git diff --check`.
+- [x] Include the Runtime-only change in the native implementation commit.
 
 ### Task 5: Bounded trajectory spool
 
@@ -82,12 +82,12 @@
 - Modify: `runtime/crates/runtime/src/lib.rs`
 - Modify: `runtime/crates/runtime/src/service.rs`
 
-- [ ] Test ordered append, duplicate/out-of-order rejection, recovery after reopen, maximum record size, maximum spool size, and explicit backpressure.
-- [ ] Implement length-delimited append-only records with checksum and crash-tail recovery.
-- [ ] Record lifecycle/reset transitions and execution terminal events before forwarding.
-- [ ] Redact environment values and never serialize credentials.
-- [ ] Run focused trajectory tests and complete Rust tests.
-- [ ] Stage only native-runtime hunks if `service.rs` still contains unrelated work; otherwise leave service integration uncommitted and report the dependency.
+- [x] Test ordered append, duplicate/out-of-order rejection, recovery after reopen, record/spool bounds, and explicit backpressure.
+- [x] Implement append-only records with independent header/body checksums, crash-tail recovery, writer lock and directory sync.
+- [x] Record lifecycle/reset transitions and execution events/terminal metadata before forwarding; Delete can clean up despite a full spool.
+- [x] Omit raw command/env/I/O/error; store payload lengths and hashes. Caller identifiers must be secret-free. Content replay is deferred.
+- [x] Run focused trajectory tests and complete Rust tests.
+- [x] Split `service.rs`: protocol imports/stub/fingerprint in the shared baseline; native behavior in the implementation commit.
 
 ### Task 6: Scorer isolation boundary
 
@@ -95,10 +95,11 @@
 - Create: `runtime/crates/runtime/src/scoring.rs`
 - Modify: `runtime/crates/runtime/src/lib.rs`
 
-- [ ] Test immutable artifact manifests, digest validation, scorer/environment provenance, terminal trajectory sequence binding, and sandbox-authored score rejection.
-- [ ] Implement scorer handoff/result value types and validation without starting a scorer inside the sandbox.
-- [ ] Add trajectory records for handoff and accepted result metadata.
-- [ ] Run focused and complete Rust tests and commit the task.
+- [x] Test immutable manifests, digest validation, scorer/environment provenance, terminal identity binding, and forged scorer capability rejection.
+- [x] Implement host-only scorer value types/capability validation; actual worker authentication, CAS verification and isolation remain deployment obligations.
+- [x] Add recorded host adapters for handoff and accepted result metadata digests; no scoring RPC is added.
+- [x] Run focused and complete Rust tests.
+- [x] Include scoring in the native implementation commit.
 
 ### Task 7: Frozen-protocol service integration
 
@@ -107,13 +108,13 @@
 - Modify: `runtime/crates/runtime/src/bin/node.rs`
 - Modify: `runtime/README.md`
 
-- [ ] Rebase integration on the committed protocol baseline; do not edit protobuf or controller files.
-- [ ] Add service tests for clean reset, unsupported reset modes, reset/execute races, and health capabilities.
-- [ ] Translate internal `Resetting` to an existing non-ready external state.
-- [ ] Validate environment pins before any launch side effect and return deterministic gRPC status codes.
-- [ ] Expose only capabilities that the node enforces.
-- [ ] Run `make test-rust`, protocol compatibility checks that do not regenerate files, and `git diff --check`.
-- [ ] Confirm the feature's committed diff contains no controller-runtime protocol changes.
+- [x] Separate integration from the shared protocol baseline; the native implementation changes no protobuf or controller files.
+- [x] Test clean reset/replay, unsupported modes, reset/execute races, guest READY sequence compatibility, expired admission, duplicate execution, backpressure and health.
+- [x] Translate internal `Resetting` to an existing non-ready external state.
+- [x] Verify supported image/runtime pins before launch; reject unsupported policy/version/lifetime requests.
+- [x] Advertise only idempotent-create-v1/reset-clean-v1; Linux conformance is a separate deployment gate.
+- [x] Run `make test-rust`, protocol checks without regeneration, and `git diff --check`.
+- [x] Confirm the native implementation diff contains no controller-runtime protocol changes.
 
 ### Task 8: Container throughput driver
 
@@ -146,9 +147,43 @@
 
 ## Final Verification
 
-- [ ] `make test-rust`
+- [x] `make test-rust`
 - [ ] `make test` when integration touches shared build paths
-- [ ] `git diff --check`
-- [ ] Review committed diff for secrets, unbounded buffers, unsafe cleanup, and protocol changes
-- [ ] Record Linux/containerd/KVM tests that were not run locally
+- [x] `git diff --check`
+- [x] Review implementation diff for secrets, unbounded buffers, unsafe cleanup, and protocol changes
+- [x] Record Linux/containerd/KVM tests that were not run locally
 - [ ] Request spec-compliance and code-quality review before opening the PR
+
+## Current delivery boundary
+
+Tasks 3–6 implement the semantic slice above; Task 7 is implemented and tested
+against the shared Obscura controller/runtime protocol. Commits separate that
+protocol baseline from the native implementation and from the independent
+AgentENV/HTTP provider adapters. The native runtime does not depend on AgentENV
+code, SDKs, services or deployment. Tasks 8–9 remain open: no containerd/runsc
+driver, warm-pool performance results, AgentENV comparison, latency/resource
+metrics or real Linux/KVM conformance is claimed. See the design's implemented
+slice section for the reduced metadata-only trajectory and scorer boundaries.
+
+### Local validation evidence
+
+- `make test-rust protocol-check`: 88 Rust tests passed; both Proto files and two
+  protocol fixtures validated without regeneration.
+- `cargo clippy --manifest-path runtime/Cargo.toml --all-targets -- -D warnings`:
+  passed. Added the missing `WarmVmPool::is_empty` companion to satisfy the existing lint.
+- `cd control && go test ./...`: passed against existing generated sources.
+- `git diff --check`: passed; independent spec/correctness review completed and
+  its reset, deadline, revision, guest-sequence and spool-corruption findings fixed.
+- Protocol, CRD types and Controller checksums match the pre-implementation
+  working-tree baseline. Their pre-existing edits are in the shared baseline,
+  outside the native implementation commit.
+- No Linux/KVM/conntrack/containerd integration or performance measurements ran
+  on this macOS host. Full `make test` was not invoked because its generation
+  prerequisites would write into the concurrent protocol/guest work.
+- Commit preparation exports the shared baseline into a separate directory and
+  runs Go, Rust and protocol checks without any new AgentENV adapter files. The
+  baseline adds generated CRD/deepcopy fields so Kubernetes retains new policies.
+  Native integration and AgentENV adapters are then staged as separate commits.
+- The exported shared-baseline-plus-native tree also passes `make test-go
+  test-rust protocol-check` (88 Rust tests) and strict all-target Clippy, with no
+  AgentENV source, envd Proto or provider profile present.

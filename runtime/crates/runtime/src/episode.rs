@@ -147,11 +147,6 @@ impl EpisodeTracker {
         if !state.active_executions.remove(&lease.execution_id) {
             return Err(EpisodeError::ExecutionNotActive);
         }
-        if state.active_executions.is_empty() {
-            if let EpisodePhase::Resetting { reaped } = &mut state.phase {
-                *reaped = true;
-            }
-        }
         Ok(())
     }
 
@@ -164,7 +159,9 @@ impl EpisodeTracker {
             return Err(EpisodeError::ResetInProgress);
         }
         state.phase = EpisodePhase::Resetting {
-            reaped: state.active_executions.is_empty(),
+            // A completed shell may have left background children. Only the
+            // isolation driver can prove that the entire process tree is gone.
+            reaped: false,
         };
         Ok(ResetTicket {
             sandbox_id,
@@ -287,6 +284,27 @@ mod tests {
         );
         tracker.confirm_reaped(&ticket).unwrap();
         tracker.complete_reset(&ticket).unwrap();
+    }
+
+    #[test]
+    fn command_completion_is_not_evidence_of_process_tree_reaping() {
+        let id = Uuid::new_v4();
+        let mut tracker = EpisodeTracker::default();
+        tracker.register(id, "revision".into(), 1).unwrap();
+        let execution = tracker.begin_execution(id, "shell".into()).unwrap();
+        let ticket = tracker.begin_reset(id).unwrap();
+        tracker.finish_execution(&execution).unwrap();
+        assert_eq!(
+            tracker.complete_reset(&ticket),
+            Err(EpisodeError::ExecutionsNotReaped)
+        );
+        tracker.confirm_reaped(&ticket).unwrap();
+        tracker.complete_reset(&ticket).unwrap();
+        let next = tracker.begin_reset(id).unwrap();
+        assert_eq!(
+            tracker.complete_reset(&next),
+            Err(EpisodeError::ExecutionsNotReaped)
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ use agentruntime_runtime::orchestrator::{NodeConfig, Orchestrator};
 use agentruntime_runtime::rpc::data_plane_server::DataPlaneServer;
 use agentruntime_runtime::service::{Metrics, RuntimeService};
 use agentruntime_runtime::storage::Store;
+use agentruntime_runtime::trajectory::{SpoolLimits, TrajectorySpool};
 use axum::{routing::get, Router};
 use std::env;
 use std::fs;
@@ -51,6 +52,13 @@ async fn main() -> anyhow::Result<()> {
     if !active_ids.is_empty() {
         tracing::warn!(sandboxes = ?active_ids, "previous sandbox resources quarantined: ownership cannot be proven; automatic cleanup is disabled");
     }
+    let trajectory = TrajectorySpool::open(
+        &state_dir.join("trajectory.spool"),
+        SpoolLimits {
+            max_record_bytes: 16 * 1024,
+            max_spool_bytes: 256 * 1024 * 1024,
+        },
+    )?;
     let orchestrator = Orchestrator::new(
         NodeConfig {
             template_ref: required("OBSCURA_TEMPLATE_REF")?,
@@ -66,7 +74,8 @@ async fn main() -> anyhow::Result<()> {
         store,
         firecracker,
         NetworkManager::new(SystemCommandRunner),
-    );
+    )
+    .with_trajectory(trajectory);
     if socket.exists() {
         anyhow::bail!("node socket already exists: {}", socket.display());
     }

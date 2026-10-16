@@ -76,9 +76,8 @@ impl EnvironmentRevision {
         image_path: &Path,
     ) -> Result<Self, RevisionError> {
         validate(spec, actual_runtime_version)?;
-        let image = std::fs::read(image_path)
+        let actual_image_digest = crate::image::file_digest(image_path)
             .map_err(|error| RevisionError::ImageRead(error.to_string()))?;
-        let actual_image_digest = format!("sha256:{:x}", Sha256::digest(image));
         if actual_image_digest != spec.pins.image_digest {
             return Err(RevisionError::ImageDigestMismatch {
                 requested: spec.pins.image_digest.clone(),
