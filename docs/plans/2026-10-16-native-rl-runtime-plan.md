@@ -23,13 +23,13 @@
 - Create: `runtime/crates/runtime/src/environment.rs`
 - Modify: `runtime/crates/runtime/src/lib.rs`
 
-- [ ] Define plain Rust inputs for runtime version, image digest, dependency lock, dataset version, scorer version, template, resources, network, and workspace policy.
-- [ ] Test that the same complete input produces the same revision digest.
-- [ ] Test that every pinned field and enforced policy changes the digest.
-- [ ] Test rejection of malformed SHA-256 image digests and runtime-version mismatches.
-- [ ] Implement canonical encoding, validation, and revision evidence.
-- [ ] Run `cargo test --manifest-path runtime/Cargo.toml environment`.
-- [ ] Commit only the new module and `lib.rs` change.
+- [x] Define plain Rust inputs for runtime version, image digest, dependency lock, dataset version, scorer version, template, resources, network, and workspace policy.
+- [x] Test that the same complete input produces the same revision digest.
+- [x] Test that every pinned field and enforced policy changes the digest.
+- [x] Test rejection of malformed SHA-256 image digests and runtime-version mismatches.
+- [x] Implement canonical encoding, validation, and revision evidence.
+- [x] Run `cargo test --manifest-path runtime/Cargo.toml environment`.
+- [x] Commit only the new module, `lib.rs`, and this checklist update.
 
 ### Task 2: Episode lease and internal fencing
 
