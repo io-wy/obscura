@@ -37,13 +37,13 @@
 - Create: `runtime/crates/runtime/src/episode.rs`
 - Modify: `runtime/crates/runtime/src/lib.rs`
 
-- [ ] Define `EpisodeLease` with sandbox ID, episode ID, generation, and environment revision.
-- [ ] Test monotonic generation on successful reset.
-- [ ] Test rejection of execution completion from an older internal generation.
-- [ ] Test that reset cannot finish while an execution guard remains active unless the driver reports it reaped.
-- [ ] Implement the smallest state machine that satisfies the tests.
-- [ ] Document that the frozen external request has no epoch field; fencing protects node-internal work and active streams, not independently delayed new callers.
-- [ ] Run the focused Rust tests and commit the task.
+- [x] Define `EpisodeLease` with sandbox ID, episode ID, generation, and environment revision.
+- [x] Test monotonic generation on successful reset.
+- [x] Test rejection of execution completion from an older internal generation.
+- [x] Test that reset cannot finish while an execution guard remains active unless the driver reports it reaped.
+- [x] Implement the smallest state machine that satisfies the tests.
+- [x] Document that the frozen external request has no epoch field; fencing protects node-internal work and active streams, not independently delayed new callers.
+- [x] Run the focused Rust tests and commit the task.
 
 ### Task 3: Persist reset intent and episode generation
 

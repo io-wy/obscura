@@ -1,4 +1,5 @@
 pub mod environment;
+pub mod episode;
 pub mod firecracker;
 pub mod frame;
 pub mod guest;
