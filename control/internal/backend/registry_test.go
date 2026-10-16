@@ -413,6 +413,54 @@ func TestHTTPPTYWebSocketContract(t *testing.T) {
 		t.Fatalf("exit=%+v err=%v", message, err)
 	}
 }
+
+func TestHTTPPortProxyContract(t *testing.T) {
+	b := httpBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.EscapedPath() != "/sandboxes/remote%2Fid/ports/8080/api/a%20b" || r.URL.RawQuery != "page=2" {
+			t.Errorf("request: %s %s?%s", r.Method, r.URL.EscapedPath(), r.URL.RawQuery)
+		}
+		if r.Header.Get("X-Test") != "allowed" {
+			t.Errorf("headers: %v", r.Header)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "request" {
+			t.Errorf("body: %q", body)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("X-Response", "value")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = io.WriteString(w, "response")
+	})
+	proxy := b.(PortProxy)
+	response, err := proxy.Proxy(context.Background(), "remote/id", ProxyRequest{Port: 8080, Method: http.MethodPatch, Path: "/api/a b", RawQuery: "page=2", Header: map[string][]string{"X-Test": {"allowed"}}, Body: strings.NewReader("request"), ContentLength: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusPartialContent || string(body) != "response" || response.Header["X-Response"][0] != "value" {
+		t.Fatalf("response=%+v body=%q err=%v", response, body, err)
+	}
+}
+
+func TestHTTPPortProxyRejectsUnsafeTarget(t *testing.T) {
+	called := false
+	b := httpBackend(t, func(w http.ResponseWriter, r *http.Request) { called = true })
+	proxy := b.(PortProxy)
+	for _, request := range []ProxyRequest{
+		{Port: 0, Method: http.MethodGet, Path: "/"},
+		{Port: 80, Method: http.MethodGet, Path: "http://example.com/"},
+		{Port: 80, Method: http.MethodGet, Path: "/a/../b"},
+		{Port: 80, Method: "BAD METHOD", Path: "/"},
+	} {
+		if _, err := proxy.Proxy(context.Background(), "sandbox", request); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("request=%+v err=%v", request, err)
+		}
+	}
+	if called {
+		t.Fatal("unsafe proxy request reached runtime")
+	}
+}
 func TestRegistryLoadsNamespacedSecret(t *testing.T) {
 	scheme := runtime.NewScheme()
 	corev1.AddToScheme(scheme)
@@ -456,7 +504,7 @@ func TestRegistrySeparatesControlAndDataEndpoints(t *testing.T) {
 	defer b.Close()
 	executor, ok := b.(Executor)
 	if !ok {
-		t.Fatal("agentenv backend must expose the legacy executor contract")
+		t.Fatal("e2b backend must expose the shared executor contract")
 	}
 	if err := executor.Exec(context.Background(), "sandbox", Execution{ID: "exec", Command: "true", Deadline: time.Now().Add(time.Second)}, func(Event) error { return nil }); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("execution error = %v, want data endpoint 404", err)
@@ -471,6 +519,16 @@ func TestRegistryDoesNotRouteNamedProvidersToLegacyE2BAdapter(t *testing.T) {
 				t.Fatalf("Open(%q) error = %v, want ErrUnsupported", provider, err)
 			}
 		})
+	}
+}
+
+func TestHTTPClientFailsClosedForUninstalledProviderCodecs(t *testing.T) {
+	b := &httpBackendClient{profile: agentENVHTTPProfile("v0.2.3")}
+	if err := b.Exec(context.Background(), "sandbox", Execution{ID: "exec", Command: "true"}, func(Event) error { return nil }); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("AgentENV execution codec was not fail-closed: %v", err)
+	}
+	if _, err := b.ReadFile(context.Background(), "sandbox", "/tmp/file"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("AgentENV file codec was not fail-closed: %v", err)
 	}
 }
 
@@ -518,6 +576,9 @@ func TestHTTPDiscoveryPaginatesBeforeCreation(t *testing.T) {
 	got, err := b.Ensure(context.Background(), e2bRequest())
 	if err != nil || got.Handle != "a" || got.State != Paused {
 		t.Fatalf("got %v %v", got, err)
+	}
+	if !got.Capabilities["execute"] || !got.Capabilities["files"] || !got.Capabilities["ports"] {
+		t.Fatalf("missing E2B profile capabilities: %+v", got.Capabilities)
 	}
 }
 func TestHTTPMalformedDiscoveryNeverCreates(t *testing.T) {

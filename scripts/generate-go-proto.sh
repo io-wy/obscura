@@ -18,4 +18,10 @@ protoc \
   api/proto/agentruntime/v1/runtime.proto \
   api/proto/agentruntime/v1/guest.proto
 
+protoc \
+  -I control/proto \
+  --go_out=control/gen \
+  --go_opt=paths=source_relative \
+  control/proto/agentenv/envd/process.proto
+
 echo "generated Go protobuf bindings under control/gen"

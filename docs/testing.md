@@ -18,7 +18,7 @@ Gateway 和 native gRPC/UDS 模拟 Runtime 的本地环境，无需 Docker、roo
 | Native adapter | 真实 gRPC + Unix socket、稳定 ID/hash、协议版本/capability、错误映射、执行终止与截断流 | 模拟器固定输出，不运行命令；真实执行链需 Linux/KVM |
 | Rust 核心 | 编译、SQLite、事务、资源分配、重启 quarantine、规则生成、HTTP/frame 解析、mock 生命周期与回滚测试 | Rust node 在 macOS 拒绝启动；Firecracker、TAP、nftables、实际网络策略需 Linux/KVM |
 | guest runner | TypeScript 类型检查/构建、protobuf frame 编解码 | 当前自动测试只覆盖 framing；真实 shell/Pi 行为、PID 1、挂载、vsock 与 Linux guest 需另外验收；Pi 调用还需模型凭据 |
-| AgentENV / CubeSandbox / E2B adapter | Go httptest 契约：发现/分页、创建不确定性、冲突、删除、Secret 与重定向策略 | 真实上游版本未验收；Gateway 经过 HTTP 后端的 execute/files/PTY/端口代理尚未实现 |
+| AgentENV / CubeSandbox / E2B adapter | Go httptest 契约：发现/分页、创建不确定性、冲突、删除、Secret 与重定向；AgentENV v0.2.3 Connect execute 与 multipart/raw files | 真实上游版本未验收；AgentENV PTY/端口及 OpenSandbox/CubeSandbox 数据面尚未实现 |
 | CRD / Kustomize / 镜像 | CRD 测试、清单渲染；Docker daemon 可用时可构建镜像 | Pod、Service、RBAC、Deployment rollout、leader election 需 Kind 或真实集群 |
 | guest 镜像 / VM / 网络隔离 | 配置和逻辑单元测试 | OCI→ext4 镜像脚本要求 Linux/root；启动 VM、vsock、出口网络/拒绝策略、清理泄漏需 Linux/KVM |
 | 快照、克隆、预热池、跨节点原生调度、完整 E2B SDK | 未实现 | 需先开发相应能力 |
@@ -266,11 +266,22 @@ port-forward。可用 `OBSCURA_KIND_PORT` 更换本地端口。Kind 中的执行
 3. 验证默认拒绝出口、显式出口允许，以及不同沙箱的磁盘/进程/网络隔离和资源限制。
 4. 删除与 TTL 回收后，核对 Firecracker 进程、TAP、nft 规则、磁盘、SQLite 绑定，不应只看 CR 消失。
 5. 测试创建失败/丢响应/中途崩溃与 controller 重启；真实 node 重启应隔离旧实例，按契约人工审计，不能声称自动接管。
-6. AgentENV/CubeSandbox 单独固定上游版本，验收发现/分页、创建不确定性、删除确认及策略限制。
+6. AgentENV/CubeSandbox 单独固定上游版本，验收发现/分页、创建不确定性、删除确认及策略限制；AgentENV 还要实测 Connect 执行、stdin/close、取消、截断流和二进制文件往返。
 
-未实现的 HTTP execute、files、PTY、快照/克隆/预热池不列为环境失败，应作为功能缺口追踪。
+未完成真实部署准入的 HTTP provider，以及 PTY、快照/克隆/预热池，不列为环境失败，
+应作为功能缺口追踪。AgentENV execute/files 只有通过上述实机 smoke 后才能从协议测试
+状态提升为已准入。
 
 ## 验证记录
+
+2026-10-16，在 Apple Silicon macOS 上：`make test-go protocol-check` 和
+`cd control && go test -race ./internal/backend -count=1 -timeout=90s` 通过。
+AgentENV v0.2.3 的 HTTP 协议模拟覆盖 Connect framing、启动后发送 stdin、输入输出
+并发、输入失败中断输出且不误报成功、HTTP 取消、token 路由、错误脱敏和二进制文件
+上传下载。生成脚本包含 envd protobuf message binding，不生成未使用的 gRPC stub。
+真实 AgentENV 部署、远端进程终止、OpenSandbox/CubeSandbox 数据面未在本轮验收；
+对应 provider 仍未开放 Registry。AgentENV 本机 checkout 的 pull/fetch 多次因
+GitHub HTTPS 超时未完成，源码校对使用已核对 tag/commit 的 v0.2.3 release 源码。
 
 2026-10-15，在 Apple Silicon macOS 上：`make test`、`make test-controlplane`、
 `make kind-up`、`make kind-smoke`、`docker compose run --build --rm control-tests`

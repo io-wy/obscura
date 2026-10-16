@@ -19,26 +19,30 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-// httpBackendClient implements the E2B lifecycle subset, not envd or full SDK compatibility.
-// GET /v2/sandboxes uses URL-encoded metadata, comma-separated states and X-Next-Token.
-// See https://github.com/e2b-dev/E2B/blob/main/spec/openapi.yml. Deployments lacking
-// this versioned discovery contract fail closed; there is no unsafe v1 list fallback.
+// httpBackendClient is the shared HTTP runtime transport. Provider-specific
+// paths, authentication, and stream protocols come from profile; this client
+// owns lifecycle safety, limits, cancellation, and error mapping.
 type httpBackendClient struct {
 	endpoint     string
 	dataEndpoint string
 	key          string
+	profile      httpRuntimeProfile
 	client       *http.Client
 }
 type remoteSandbox struct {
-	ID       string            `json:"sandboxID"`
-	State    string            `json:"state"`
-	Metadata map[string]string `json:"metadata"`
+	ID                 string            `json:"sandboxID"`
+	State              string            `json:"state"`
+	Metadata           map[string]string `json:"metadata"`
+	EnvdAccessToken    string            `json:"envdAccessToken,omitempty"`
+	TrafficAccessToken string            `json:"trafficAccessToken,omitempty"`
+	Domain             string            `json:"domain,omitempty"`
 }
 
 const (
 	maxHTTPEventBytes  = 256 << 10
 	maxHTTPOutputBytes = 16 << 20
 	maxHTTPFileBytes   = 32 << 20
+	maxHTTPProxyBytes  = 32 << 20
 )
 
 func (b *httpBackendClient) Close() error { b.client.CloseIdleConnections(); return nil }
@@ -50,7 +54,7 @@ func (b *httpBackendClient) Validate(r Request) error {
 		return fmt.Errorf("timeout must be between 1 and 2147483647 seconds")
 	}
 	if r.Resources != (Resources{}) {
-		return fmt.Errorf("%w: resources must be configured in the E2B template", ErrUnsupported)
+		return fmt.Errorf("%w: resources must be configured in the %s template", ErrUnsupported, b.profile.Name)
 	}
 	// E2B deployments differ in network support. Reject policy requests until the
 	// selected deployment has an explicitly tested network capability adapter.
@@ -78,9 +82,7 @@ func (b *httpBackendClient) request(ctx context.Context, method, path string, bo
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if b.key != "" {
-		req.Header.Set("X-API-Key", b.key)
-	}
+	b.profile.auth(req, b.key)
 	resp, err := b.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: runtime HTTP request failed", ErrUnavailable)
@@ -132,7 +134,7 @@ func (b *httpBackendClient) discover(ctx context.Context, r Request) (Observatio
 	var match *remoteSandbox
 	for pages := 0; pages < 1000; pages++ {
 		var items []remoteSandbox
-		headers, err := b.request(ctx, "GET", "/v2/sandboxes?"+query.Encode(), nil, &items)
+		headers, err := b.request(ctx, "GET", b.profile.DiscoveryPath+"?"+query.Encode(), nil, &items)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				// Missing discovery route is not evidence that an instance is absent.
@@ -158,7 +160,7 @@ func (b *httpBackendClient) discover(ctx context.Context, r Request) (Observatio
 			if match == nil {
 				return Observation{}, false, nil
 			}
-			obs, err := httpObservation(*match)
+			obs, err := b.httpObservation(*match)
 			return obs, true, err
 		}
 		if seenTokens[next] {
@@ -183,7 +185,7 @@ func (b *httpBackendClient) Ensure(ctx context.Context, r Request) (Observation,
 	}
 	body := map[string]any{"templateID": r.Template, "timeout": r.TimeoutSeconds, "metadata": map[string]string{"obscura_uid": r.ID, "spec_hash": r.SpecHash}}
 	var created remoteSandbox
-	if _, err := b.request(ctx, "POST", "/sandboxes", body, &created); err != nil {
+	if _, err := b.request(ctx, "POST", b.profile.CreatePath, body, &created); err != nil {
 		return Observation{}, ErrAmbiguous
 	}
 	if created.ID == "" {
@@ -193,9 +195,9 @@ func (b *httpBackendClient) Ensure(ctx context.Context, r Request) (Observation,
 	if created.State == "" {
 		created.State = "running"
 	}
-	return httpObservation(created)
+	return b.httpObservation(created)
 }
-func httpObservation(s remoteSandbox) (Observation, error) {
+func (b *httpBackendClient) httpObservation(s remoteSandbox) (Observation, error) {
 	if s.ID == "" {
 		return Observation{}, fmt.Errorf("runtime response has no sandbox ID")
 	}
@@ -208,27 +210,31 @@ func httpObservation(s remoteSandbox) (Observation, error) {
 	default:
 		return Observation{}, fmt.Errorf("unsupported runtime sandbox state")
 	}
-	return Observation{Handle: s.ID, State: state}, nil
+	capabilities := make(map[string]bool, len(b.profile.Capabilities))
+	for name, supported := range b.profile.Capabilities {
+		capabilities[name] = supported
+	}
+	return Observation{Handle: s.ID, State: state, Capabilities: capabilities}, nil
 }
 func (b *httpBackendClient) Observe(ctx context.Context, id string) (Observation, error) {
 	if id == "" {
 		return Observation{}, fmt.Errorf("sandbox handle is required")
 	}
 	var sandbox remoteSandbox
-	_, err := b.request(ctx, "GET", "/sandboxes/"+url.PathEscape(id), nil, &sandbox)
+	_, err := b.request(ctx, "GET", b.profile.SandboxPath(url.PathEscape(id)), nil, &sandbox)
 	if err != nil {
 		return Observation{}, err
 	}
 	if sandbox.ID != id {
 		return Observation{}, ErrConflict
 	}
-	return httpObservation(sandbox)
+	return b.httpObservation(sandbox)
 }
 func (b *httpBackendClient) Delete(ctx context.Context, id string) (bool, error) {
 	if id == "" {
 		return false, fmt.Errorf("sandbox handle is required")
 	}
-	_, err := b.request(ctx, "DELETE", "/sandboxes/"+url.PathEscape(id), nil, nil)
+	_, err := b.request(ctx, "DELETE", b.profile.SandboxPath(url.PathEscape(id)), nil, nil)
 	if errors.Is(err, ErrNotFound) {
 		return true, nil
 	}
@@ -242,6 +248,9 @@ func (b *httpBackendClient) Delete(ctx context.Context, id string) (bool, error)
 	return false, err
 }
 func (b *httpBackendClient) Exec(ctx context.Context, id string, execution Execution, emit func(Event) error) error {
+	if b.profile.ExecuteProtocol != "ndjson" {
+		return fmt.Errorf("%w: %s execution codec is not installed", ErrUnsupported, b.profile.Name)
+	}
 	if id == "" || execution.ID == "" || execution.Command == "" || emit == nil {
 		return fmt.Errorf("%w: sandbox, execution, command and event receiver are required", ErrInvalid)
 	}
@@ -264,15 +273,13 @@ func (b *httpBackendClient) Exec(ctx context.Context, id string, execution Execu
 	if err != nil {
 		return fmt.Errorf("%w: encode execution request", ErrInvalid)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.dataEndpoint+"/sandboxes/"+url.PathEscape(id)+"/commands", bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.dataEndpoint+b.profile.ExecutePath(url.PathEscape(id)), bytes.NewReader(encoded))
 	if err != nil {
 		return fmt.Errorf("%w: invalid execution request", ErrInvalid)
 	}
 	req.Header.Set("Accept", "application/x-ndjson")
 	req.Header.Set("Content-Type", "application/json")
-	if b.key != "" {
-		req.Header.Set("X-API-Key", b.key)
-	}
+	b.profile.auth(req, b.key)
 	resp, err := b.client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -343,6 +350,9 @@ func validateFilePath(value string) error {
 }
 
 func (b *httpBackendClient) ReadFile(ctx context.Context, id, filePath string) (FileRead, error) {
+	if b.profile.FileProtocol != "raw-http" {
+		return FileRead{}, fmt.Errorf("%w: %s file codec is not installed", ErrUnsupported, b.profile.Name)
+	}
 	if id == "" {
 		return FileRead{}, fmt.Errorf("%w: sandbox handle is required", ErrInvalid)
 	}
@@ -352,14 +362,12 @@ func (b *httpBackendClient) ReadFile(ctx context.Context, id, filePath string) (
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 	query := url.Values{"path": {filePath}}.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.dataEndpoint+"/sandboxes/"+url.PathEscape(id)+"/files?"+query, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.dataEndpoint+b.profile.FilesPath(url.PathEscape(id))+"?"+query, nil)
 	if err != nil {
 		return FileRead{}, fmt.Errorf("%w: invalid file request", ErrInvalid)
 	}
 	req.Header.Set("Accept", "application/octet-stream")
-	if b.key != "" {
-		req.Header.Set("X-API-Key", b.key)
-	}
+	b.profile.auth(req, b.key)
 	resp, err := b.client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -385,6 +393,9 @@ func (b *httpBackendClient) ReadFile(ctx context.Context, id, filePath string) (
 }
 
 func (b *httpBackendClient) WriteFile(ctx context.Context, id string, file FileWrite) error {
+	if b.profile.FileProtocol != "raw-http" {
+		return fmt.Errorf("%w: %s file codec is not installed", ErrUnsupported, b.profile.Name)
+	}
 	if id == "" || file.Body == nil {
 		return fmt.Errorf("%w: sandbox handle and file body are required", ErrInvalid)
 	}
@@ -407,15 +418,13 @@ func (b *httpBackendClient) WriteFile(ctx context.Context, id string, file FileW
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 	query := url.Values{"path": {file.Path}}.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, b.dataEndpoint+"/sandboxes/"+url.PathEscape(id)+"/files?"+query, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, b.dataEndpoint+b.profile.FilesPath(url.PathEscape(id))+"?"+query, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("%w: invalid file request", ErrInvalid)
 	}
 	req.Header.Set("Content-Type", file.ContentType)
 	req.Header.Set("Accept", "application/json")
-	if b.key != "" {
-		req.Header.Set("X-API-Key", b.key)
-	}
+	b.profile.auth(req, b.key)
 	resp, err := b.client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -472,6 +481,9 @@ func (s *httpPTYSession) Close() error {
 }
 
 func (b *httpBackendClient) OpenPTY(ctx context.Context, id string, request PTYRequest) (PTYSession, error) {
+	if !b.profile.Capabilities["pty"] {
+		return nil, fmt.Errorf("%w: %s PTY is not advertised", ErrUnsupported, b.profile.Name)
+	}
 	if id == "" || request.ID == "" || request.Command == "" || request.Columns == 0 || request.Rows == 0 {
 		return nil, fmt.Errorf("%w: sandbox, session, command and terminal dimensions are required", ErrInvalid)
 	}
@@ -490,11 +502,12 @@ func (b *httpBackendClient) OpenPTY(ctx context.Context, id string, request PTYR
 	default:
 		return nil, fmt.Errorf("%w: invalid PTY endpoint scheme", ErrInvalid)
 	}
-	endpoint.RawPath = strings.TrimRight(endpoint.EscapedPath(), "/") + "/sandboxes/" + url.PathEscape(id) + "/pty"
-	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/sandboxes/" + id + "/pty"
+	ptyPath := b.profile.PTYPath(url.PathEscape(id))
+	endpoint.RawPath = strings.TrimRight(endpoint.EscapedPath(), "/") + ptyPath
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + b.profile.PTYPath(id)
 	headers := http.Header{}
 	if b.key != "" {
-		headers.Set("X-API-Key", b.key)
+		headers.Set(b.profile.AuthHeader, b.key)
 	}
 	conn, response, err := websocket.Dial(ctx, endpoint.String(), &websocket.DialOptions{HTTPHeader: headers})
 	if err != nil {
@@ -527,4 +540,95 @@ func (b *httpBackendClient) OpenPTY(ctx context.Context, id string, request PTYR
 		return nil, fmt.Errorf("%w: PTY start failed", ErrUnavailable)
 	}
 	return &httpPTYSession{conn: conn}, nil
+}
+
+type limitedResponseBody struct {
+	body      io.ReadCloser
+	remaining int64
+}
+
+func (b *limitedResponseBody) Read(buffer []byte) (int, error) {
+	if b.remaining == 0 {
+		var probe [1]byte
+		n, err := b.body.Read(probe[:])
+		if n > 0 {
+			return 0, ErrLimit
+		}
+		return 0, err
+	}
+	if int64(len(buffer)) > b.remaining {
+		buffer = buffer[:b.remaining]
+	}
+	n, err := b.body.Read(buffer)
+	b.remaining -= int64(n)
+	return n, err
+}
+
+func (b *limitedResponseBody) Close() error { return b.body.Close() }
+
+func (b *httpBackendClient) Proxy(ctx context.Context, id string, request ProxyRequest) (ProxyResponse, error) {
+	if !b.profile.Capabilities["ports"] {
+		return ProxyResponse{}, fmt.Errorf("%w: %s port proxy is not advertised", ErrUnsupported, b.profile.Name)
+	}
+	if id == "" || request.Port == 0 || request.Method == "" || request.Path == "" || !strings.HasPrefix(request.Path, "/") || path.Clean(request.Path) != request.Path || strings.ContainsRune(request.Path, 0) {
+		return ProxyResponse{}, fmt.Errorf("%w: invalid proxy target", ErrInvalid)
+	}
+	if _, err := http.NewRequest(request.Method, "http://runtime.invalid", nil); err != nil {
+		return ProxyResponse{}, fmt.Errorf("%w: invalid proxy method", ErrInvalid)
+	}
+	if _, err := url.ParseQuery(request.RawQuery); err != nil {
+		return ProxyResponse{}, fmt.Errorf("%w: invalid proxy query", ErrInvalid)
+	}
+	if request.ContentLength > maxHTTPProxyBytes {
+		return ProxyResponse{}, fmt.Errorf("%w: proxy request exceeds %d bytes", ErrLimit, maxHTTPProxyBytes)
+	}
+	var data []byte
+	if request.Body != nil {
+		var err error
+		data, err = io.ReadAll(io.LimitReader(request.Body, maxHTTPProxyBytes+1))
+		if err != nil {
+			return ProxyResponse{}, fmt.Errorf("%w: proxy request body cannot be read", ErrInvalid)
+		}
+		if len(data) > maxHTTPProxyBytes {
+			return ProxyResponse{}, fmt.Errorf("%w: proxy request exceeds %d bytes", ErrLimit, maxHTTPProxyBytes)
+		}
+		if request.ContentLength >= 0 && request.ContentLength != int64(len(data)) {
+			return ProxyResponse{}, fmt.Errorf("%w: proxy content length does not match body", ErrInvalid)
+		}
+	}
+	endpoint, err := url.Parse(b.dataEndpoint)
+	if err != nil {
+		return ProxyResponse{}, fmt.Errorf("%w: invalid proxy endpoint", ErrInvalid)
+	}
+	portPath := b.profile.PortPath(id, request.Port)
+	rawPortPath := b.profile.PortPath(url.PathEscape(id), request.Port)
+	prefixPath := strings.TrimRight(endpoint.Path, "/") + portPath
+	prefixRawPath := strings.TrimRight(endpoint.EscapedPath(), "/") + rawPortPath
+	requestURL := &url.URL{Scheme: endpoint.Scheme, Host: endpoint.Host, Path: prefixPath + request.Path, RawPath: prefixRawPath + (&url.URL{Path: request.Path}).EscapedPath(), RawQuery: request.RawQuery}
+	req, err := http.NewRequestWithContext(ctx, request.Method, requestURL.String(), bytes.NewReader(data))
+	if err != nil {
+		return ProxyResponse{}, fmt.Errorf("%w: invalid proxy request", ErrInvalid)
+	}
+	for name, values := range request.Header {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	b.profile.auth(req, b.key)
+	response, err := b.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ProxyResponse{}, ctx.Err()
+		}
+		return ProxyResponse{}, fmt.Errorf("%w: runtime port proxy failed", ErrUnavailable)
+	}
+	if response.ContentLength > maxHTTPProxyBytes {
+		response.Body.Close()
+		return ProxyResponse{}, fmt.Errorf("%w: proxy response exceeds %d bytes", ErrLimit, maxHTTPProxyBytes)
+	}
+	headers := map[string][]string{}
+	for name, values := range response.Header {
+		headers[name] = append([]string(nil), values...)
+	}
+	return ProxyResponse{StatusCode: response.StatusCode, Header: headers, Body: &limitedResponseBody{body: response.Body, remaining: maxHTTPProxyBytes}}, nil
 }

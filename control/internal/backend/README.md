@@ -1,8 +1,13 @@
 # Runtime 后端适配器
 
-`Registry.Open` 选择 `native`（别名 `obscura`），或为 `e2b`、`agentenv`、
-`cubesandbox` 选择 HTTP 生命周期子集。Secret 凭据从 Sandbox 所在命名空间解析，
-只保留在客户端，不写入 Observation。默认 Secret 数据字段为 `api-key`，也可显式指定。
+`Registry.Open` 选择一个共享的 generic HTTP runtime adapter，并加载 provider
+profile。`native`（别名 `obscura`）是自研 Runtime 的旧版本地适配器；
+AgentENV、OpenSandbox 和 CubeSandbox 只需要各自声明路径、鉴权、状态/响应 codec
+和能力 profile，只有无法配置化表达的 envelope 或 endpoint 解析才增加小 hook。
+profile 必须先通过 [Runtime Contract v1](../../../docs/plans/2026-10-16-runtime-contract-v1.md)
+的控制面与数据面契约测试才能启用。不能因为 provider 提供 E2B 风格生命周期接口，
+就推断它支持执行、文件、PTY、端口或快照。Secret 凭据只在 adapter 客户端解析，
+不写入 Observation 或 Sandbox status。
 
 ## 原生 Rust Runtime
 
@@ -44,18 +49,27 @@ HTTP 创建最多发送一次 POST；DELETE 可以重试，但 finalizer 只在�
 协议的 4xx/5xx 副作用保证、AgentENV/CubeSandbox 真实版本兼容性也需要在接入
 指定版本时验证；在此之前，POST 错误一律按结果不确定处理。
 
-## E2B 风格 HTTP 生命周期子集
+## Generic HTTP adapter 与 profiles
 
 适配器要求部署提供以下契约：
 
 - `GET /v2/sandboxes`：返回 JSON 数组，支持元数据过滤、
   `state=running,paused`，并使用 `X-Next-Token` / `nextToken` 分页。
-- `POST /sandboxes`：接收 templateID、timeout 和 metadata；成功响应包含
-  sandboxID。这里使用许多 Gateway 支持的旧版创建端点。
+- profile 指定的 create path：接收 templateID、timeout 和 metadata；成功响应
+  包含 sandboxID。旧 E2B-shaped profile 使用 `/sandboxes`，AgentENV v0.2.3
+  使用 `/v2/sandboxes`。
 - `GET /sandboxes/{id}`：返回 sandboxID 及 running/paused 状态。
 - `DELETE /sandboxes/{id}`：成功请求后，再通过 Get 确认实例已经消失。
 
-列表、过滤和分页语义于 2026-10-15 对照
+`e2b` 当前仍使用旧版 E2B-shaped profile 做兼容性原型。AgentENV v0.2.3 的
+lifecycle 复用 shared HTTP client，执行使用 HTTP/1.1 Connect-RPC，文件下载使用
+`GET /files`，上传使用 multipart `POST /files`。envd token 在每次数据面操作前从
+当前 sandbox 响应解析，只注入路由请求，不进入 Observation 或 CR status。
+stdin 等待进程启动事件后发送，并与输出读取并行；输入失败会关闭输出流，保留
+错误类别，且不会先发送成功结果。未显式指定执行截止时间时最多等待五分钟。
+AgentENV 的 execute/files httptest contract 已通过，但真实部署 smoke 尚未完成，
+因此和 OpenSandbox、CubeSandbox 一样仍由 `Registry.Open` fail-closed。列表、过滤
+和分页语义于 2026-10-15 对照
 https://github.com/e2b-dev/E2B/blob/main/spec/openapi.yml 核查。AgentENV 和
 CubeSandbox 的实际部署必须先实现这一准确的版本化生命周期子集，才能被选为后端。
 类型名称不表示它们每个发布版本都已支持。发现失败时不会回退到只列出 running
@@ -68,6 +82,7 @@ HTTP POST 不被假定为幂等；只有 Controller 的 `Request.AllowCreate` �
 不能仅因为发现结果为空就再次 POST。
 
 在适配器能够验证资源覆盖和网络限制确实生效前，这些要求会被拒绝；资源应通过
-后端模板选择。目前只接受不限制出站流量。envd 访问令牌会被丢弃；不宣称完整
-E2B SDK 支持，HTTP Exec 返回 `ErrUnsupported`。请求有超时上限，重定向会被拒绝，
-以保护凭据。
+后端模板选择。目前只接受不限制出站流量。不宣称完整 E2B SDK 支持。AgentENV
+目前只声明 adapter 已实现的 `execute` 和 `files`；PTY、端口、pause/resume、快照
+与 clone 即使上游具备，也不会提前写进 capabilities。请求有超时上限，重定向会
+被拒绝，以保护凭据。未通过真实部署验收的 profile 不会被 Registry 打开。

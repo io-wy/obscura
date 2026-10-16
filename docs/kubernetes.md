@@ -65,7 +65,11 @@ kubectl -n obscura-system create secret generic obscura-gateway-key \
 
 HTTP 后端使用 `kubectl apply -k deploy`。后端服务通过自身 Helm / manifest
 独立安装；Obscura 不重复部署或修改后端的调度器、DaemonSet 和宿主机资源。
-Backend 类型选择 agentenv / cubesandbox / e2b，入口填写集群 Service URL。
+Backend 类型必须选择已完成 provider contract 验收的 adapter。当前规划固定
+AgentENV `v0.2.3`、OpenSandbox `release-1.1.1` 和 CubeSandbox `v0.7.3`；入口填写
+对应集群 Service URL，并固定部署镜像到相同 release/commit。不要把 provider 名称
+当作兼容性证明，先通过 [Runtime Contract v1](plans/2026-10-16-runtime-contract-v1.md)
+的控制面和数据面契约测试。
 
 自研 UDS 后端使用 `deploy/overlays/native`：先在一个 Linux 节点启动 Rust
 节点，并且**仅给这一个节点**设置 `obscura.dev/runtime-node=true` 标签。
@@ -115,21 +119,25 @@ CR 被彻底删除后再使用同一 key 会创建新 UID，当前 API 没有永
 
 ## AgentENV / CubeSandbox 接入范围
 
-当前通用 HTTP 生命周期适配器需要后端提供：
+旧版通用 HTTP 生命周期原型需要后端提供：
 
 - `GET /v2/sandboxes` 的元数据过滤、running/paused 查询及分页。
 - `POST /sandboxes` 接受 templateID、timeout 和 metadata。
 - 实例查询和删除接口返回可确认的状态。
 
-类型名称表示选择该 HTTP 配置，不保证每个上游版本都符合这些接口。
-接入前固定上游 commit / tag，并验证上述契约；当前尚未对真实部署做烟测。
+类型名称表示选择该 HTTP 配置，不保证每个上游版本都符合这些接口。AgentENV
+v0.2.3 的 Connect-RPC execute 和 `/files` codec 已通过仓库内协议模拟；PTY、端口、
+快照与 clone 尚未实现。完整接入要求和固定版本见
+[Runtime Contract v1](plans/2026-10-16-runtime-contract-v1.md)。接入前固定上游
+commit/tag，并验证上述契约；当前尚未对真实部署做烟测。
 可以从 `deploy/examples/agentenv.yaml` 开始，CubeSandbox 配置使用
 `type: cubesandbox` 和它的 CubeAPI Service URL。
 
 HTTP 后端省略 resources，规格由上游模板决定。当前只接受明确允许出口网络
 的配置，不支持默认拒绝或域名白名单；这些请求会失败而不会悄悄放宽策略。
-HTTP 的 envd 执行、文件、PTY 和端口代理尚未实现，因此通过 Gateway 执行返回
-501。完整 E2B SDK 兼容仍需要另外实现平台响应、envd 和认证路由。
+AgentENV adapter 仍未通过真实部署准入，因此当前 `Registry.Open` 会 fail-closed，
+经 Gateway 选择该类型仍返回 501。不能把仓库内 Connect framing 测试当作上游部署
+已经可用。完整 E2B SDK 兼容仍需要另外实现平台响应、PTY 和端口路由。
 
 HTTP 创建只授权一次 POST；重试用 `obscura_uid` / `spec_hash` 元数据找回实例。
 创建结果不确定且查询不到实例时标记 CreationUnknown，禁止自动重新 POST。
@@ -155,7 +163,7 @@ envtest 启动真实 API Server / etcd，验证 CRD 结构、CEL 不可变规则
 `KUBEBUILDER_ASSETS` 指向预装的文件。单元测试不启动真实 Firecracker。
 Linux/KVM 和上游真实部署的端到端测试仍需在对应环境完成。
 
-2026-10-15 后续已在 Apple Silicon macOS 下载并运行 Kubernetes 1.35.0 envtest；
+后续已在 Apple Silicon macOS 下载并运行 Kubernetes 1.35.0 envtest；
 `make test` 与 `make test-controlplane` 通过，覆盖原有 API/CEL/恢复验证与新增
 manager/Gateway/gRPC 模拟 Runtime 联调。之后又通过 Compose/Linux 容器测试和
 Kind 镜像/部署/smoke；完整记录见测试指南。Linux/KVM 和真实上游后端烟测仍未验证。

@@ -1,5 +1,7 @@
-# This profile requires the documented E2B v2 discovery contract. Verify your
-# selected AgentENV version exposes it before enabling this example.
+# Contract target: AgentENV v0.2.3 at commit
+# 6cccaa7842bd5be2051111d4f74d9e37aa721244.
+# Registry admission is pending real deployment smoke tests; this example is
+# configuration documentation and is not currently an enabled backend.
 apiVersion: sandbox.obscura.dev/v1alpha1
 kind: SandboxRuntime
 metadata:
@@ -8,7 +10,9 @@ metadata:
 spec:
   config:
     type: agentenv
-    endpoint: http://agentenv-gateway.agentenv.svc.cluster.local
+    apiVersion: v0.2.3
+    controlEndpoint: http://agentenv-gateway.agentenv.svc.cluster.local
+    dataEndpoint: http://agentenv-gateway.agentenv.svc.cluster.local
     apiKeySecretName: agentenv-key
   templates:
     dev: your-agentenv-template-id
