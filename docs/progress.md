@@ -48,7 +48,9 @@ AgentENV 的 PTY、端口、快照和 clone 没有实现到专用 adapter，也�
 
 上次提交 `dade2ce` 的远端 Git conventions 通过，Local testing 在控制面测试清理
 阶段失败：API Server 超过 envtest 默认 20 秒退出等待期限。修复将默认等待改为
-有界的 90 秒，保留错误，不跳过测试。具体本轮本地和远端结果以交付消息及
+有界的 90 秒，保留错误，不跳过测试。提交 `83444c1` 的本地 `make ci` 通过，
+但远端仍在 90 秒触发相同退出超时，因此延长等待未解决根因；Actions 补充
+控制面日志，继续排查 runner 上的 API Server 关闭过程。具体本轮本地和远端结果以交付消息及
 GitHub Actions 对应提交为准，不能把旧的本地通过记录当作新提交的远端通过。
 
 macOS 的协议/控制面验证不能替代真实沙箱、生产权限或隔离验收；Kind、

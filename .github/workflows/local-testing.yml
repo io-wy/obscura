@@ -38,4 +38,6 @@ jobs:
       - name: Prepare local dependencies and envtest
         run: make dev-bootstrap
       - name: 本地与远端统一 CI 检查
+        env:
+          KUBEBUILDER_ATTACH_CONTROL_PLANE_OUTPUT: 'true'
         run: make ci
